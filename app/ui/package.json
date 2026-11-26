@@ -1,0 +1,31 @@
+{
+  "name": "chaintrail-ui",
+  "private": true,
+  "version": "0.1.0",
+  "description": "ChainTrail user interface (desktop and browser)",
+  "license": "Apache-2.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "licences": "node scripts/check-licences.mjs"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.12.5",
+    "cytoscape": "^3.35.0",
+    "cytoscape-dagre": "^4.1.0",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
+  },
+  "devDependencies": {
+    "@types/react": "^19.3.3",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react-swc": "^4.3.3",
+    "typescript": "^7.0.2",
+    "vite": "^7.3.8",
+    "vitest": "^5.1.2"
+  }
+}
