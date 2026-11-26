@@ -3,12 +3,14 @@
 pub mod change;
 pub mod cluster;
 pub mod coinjoin;
+pub mod dormancy;
 pub mod service;
 pub mod shape;
 
 pub use change::{ChangeGuess, detect_change};
 pub use cluster::{Clusters, MergeEvidence};
 pub use coinjoin::{CoinJoinInfo, CoinJoinKind, detect_coinjoin};
+pub use dormancy::{Dormancy, dormancy};
 pub use service::{ServiceHint, service_from_summary};
 pub use shape::{TxShape, classify, is_peel_step};
 

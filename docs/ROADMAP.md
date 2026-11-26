@@ -34,7 +34,9 @@ Dates are not committed; quality is.
 - [x] GraphSense TagPacks import, reviewed pack by pack (`tools/import_graphsense.py`, `data/labels/SOURCES.md`)
 - [x] User labels (`labels add`) stored locally; same-id packs replace built-in ones
 - [x] Traces name detected services through labels on addresses of the same wallet
-- [ ] Golden cases: publicly documented traces reproduced as regression tests
+- [x] Golden cases: 3 publicly documented traces replayed offline as regression tests (Colonial Pipeline, Silk Road "Individual X", Bitfinex hack)
+- [ ] Check the golden-case quotes against the original court documents (currently from search excerpts)
+- [x] Dormancy rule: consolidations of long-dormant coins are not mistaken for service sweeps (found by the Bitfinex golden case)
 - [ ] Bridge deposit addresses (needed with Ethereum support, Phase 4)
 - [ ] Fresh exchange proof-of-reserves lists directly from the exchanges (current lists date from 2022)
 - [ ] Large packs as optional downloads (BitMEX 336k addresses, sextortion IOCs after licence review)

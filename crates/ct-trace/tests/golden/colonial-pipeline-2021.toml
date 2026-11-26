@@ -1,0 +1,28 @@
+[case]
+id = "colonial-pipeline-2021"
+title = "Colonial Pipeline ransom (75 BTC, May 2021) traced to the address the FBI seized 63.7 BTC from"
+document = "https://www.justice.gov/archives/opa/pr/department-justice-seizes-23-million-cryptocurrency-paid-ransomware-extortionists-darkside"
+quote = "law enforcement was able to track multiple transfers of bitcoin and identify that approximately 63.7 bitcoins, representing the proceeds of the victim's ransom payment, had been transferred to a specific address"
+status = """On-chain flow verified. The quote is from a search excerpt of the DOJ press release and \
+has not been checked against the page. The press release names no address; that the seizure \
+affidavit names bc1qq2eu… comes from secondary sources (blockchain analysts, news) and is \
+not yet verified against the affidavit."""
+recording = "colonial-pipeline-2021.json"
+
+[trace]
+direction = "forward"
+# 75 BTC ransom arriving at bc1q7eqww9dmm9p48hx5yz5gcvmncu65w43wfytpsf on 2021-05-08.
+txid = "fc78327d4e46dac01dc313067b1ac7f274cdb3a07ea9f28f6f71473145f1b264"
+vout = 1
+max_hops = 4
+max_txs = 50
+
+[[expect]]
+address = "bc1qq2euq8pw950klpjcawuy4uj39ym43hs6cfsegq"
+min_sats = 6_360_000_000
+why = "the ~63.7 BTC of ransom proceeds reach the address seized in June 2021 (3 hops)"
+
+[[expect]]
+address = "bc1qpx7vyv5tp7dm0g475ev527krg764t73dh77gls"
+min_sats = 5_800_000_000
+why = "63.69996546 BTC left for the seizure transfer on 2021-06-07; under pro-rata ≥ 58 BTC of it is ransom"

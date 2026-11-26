@@ -123,6 +123,9 @@ enum BtcCommand {
         /// Do not look up address activity (faster, but busy service wallets are missed).
         #[arg(long)]
         no_address_checks: bool,
+        /// Save every fetched response to this JSON file, for offline replay.
+        #[arg(long, value_name = "FILE")]
+        record: Option<std::path::PathBuf>,
     },
 }
 
@@ -179,6 +182,7 @@ async fn main() -> Result<()> {
                     max_txs,
                     min_btc,
                     no_address_checks,
+                    record,
                 } => {
                     let args = trace_cmd::TraceArgs {
                         txid,
@@ -189,6 +193,7 @@ async fn main() -> Result<()> {
                         max_txs,
                         min_btc,
                         no_address_checks,
+                        record,
                     };
                     let labels = labels_cmd::load_index(cli.labels.as_deref())?;
                     trace_cmd::btc_trace(provider, &labels, args, cli.json).await?

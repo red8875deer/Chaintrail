@@ -686,3 +686,84 @@ async fn backward_batch_payout_is_named_by_sender_label() {
     );
     assert_eq!(lead.address, Some(addr(200)));
 }
+
+#[tokio::test]
+async fn recorded_traces_replay_identically() {
+    use ct_trace::testing::{Recorder, Recording, Replay};
+    let p = sweep_graph();
+    let seed = || Seed::Output {
+        txid: txid(1),
+        vout: 0,
+    };
+    let recorder = Recorder::new(&p);
+    let live = trace_bitcoin(&recorder, &NoLabels, seed(), forward(), &mut |_| {})
+        .await
+        .unwrap();
+    // Round-trip through JSON, as a fixture file would.
+    let json = serde_json::to_string(&recorder.into_recording()).unwrap();
+    let replay = Replay::new(serde_json::from_str::<Recording>(&json).unwrap());
+    let again = trace_bitcoin(&replay, &NoLabels, seed(), forward(), &mut |_| {})
+        .await
+        .unwrap();
+    assert_eq!(
+        serde_json::to_value(&live.leads).unwrap(),
+        serde_json::to_value(&again.leads).unwrap()
+    );
+    assert_eq!(live.flows.len(), again.flows.len());
+}
+
+#[tokio::test]
+async fn consolidation_of_long_dormant_coins_is_followed_not_called_a_service() {
+    // The traced coin and 59 others were created at height 100 and swept ~139 days later
+    // (20,000 blocks): an owner consolidating old coins, as the 2016 Bitfinex thief did.
+    let t1 = tx(
+        &txid(1),
+        100,
+        &[(&txid(900), 0, &addr(1), BTC + 10_000)],
+        &[(&addr(2), BTC)],
+    );
+    let mut prevs = vec![t1];
+    let mut ins: Vec<(String, u32, ct_core::Address, u64)> = vec![(txid(1), 0, addr(2), BTC)];
+    for i in 0..59u8 {
+        let id = txid(1000 + i as u32);
+        prevs.push(tx(
+            &id,
+            100,
+            &[(&txid(5000 + i as u32), 0, &addr(1), 2_000_000)],
+            &[(&addr(100 + i), 1_000_000)],
+        ));
+        ins.push((id, 0, addr(100 + i), 1_000_000));
+    }
+    let ins_ref: Vec<(&str, u32, &ct_core::Address, u64)> = ins
+        .iter()
+        .map(|(t, v, a, x)| (t.as_str(), *v, a, *x))
+        .collect();
+    prevs.push(tx(
+        &txid(3),
+        20_100,
+        &ins_ref,
+        &[(&addr(250), 159 * BTC / 100)],
+    ));
+    let p = MemoryBitcoin::new(prevs);
+    let r = run(
+        &p,
+        Seed::Output {
+            txid: txid(1),
+            vout: 0,
+        },
+        forward(),
+    )
+    .await;
+
+    assert!(
+        r.leads
+            .iter()
+            .all(|l| l.category != Some(EntityCategory::UnknownService)),
+        "{r:#?}"
+    );
+    let lead = &r.leads[0];
+    assert_eq!(lead.kind, LeadKind::AtRest);
+    assert_eq!(lead.address, Some(addr(250)));
+    let note = r.flows.iter().find_map(|f| f.note.clone()).unwrap();
+    assert!(note.contains("not a service sweep"), "{note}");
+}

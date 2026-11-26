@@ -20,6 +20,8 @@ pub struct TraceArgs {
     pub max_txs: u32,
     pub min_btc: Option<String>,
     pub no_address_checks: bool,
+    /// Save every fetched response here, for offline replay (golden tests, bug reports).
+    pub record: Option<std::path::PathBuf>,
 }
 
 pub async fn btc_trace(
@@ -68,7 +70,17 @@ pub async fn btc_trace(
             let _ = e.flush();
         }
     };
-    let report = ct_trace::trace_bitcoin(p, labels, seed, config, &mut progress).await?;
+    let report = match &args.record {
+        Some(path) => {
+            let recorder = ct_trace::testing::Recorder::new(p);
+            let report =
+                ct_trace::trace_bitcoin(&recorder, labels, seed, config, &mut progress).await?;
+            let json = serde_json::to_string(&recorder.into_recording())?;
+            std::fs::write(path, json)?;
+            report
+        }
+        None => ct_trace::trace_bitcoin(p, labels, seed, config, &mut progress).await?,
+    };
     if show_progress {
         eprintln!();
     }

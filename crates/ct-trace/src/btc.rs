@@ -10,7 +10,10 @@ use std::collections::HashMap;
 use ct_core::{
     Address, AddressSummary, Chain, Claim, Confidence, EntityCategory, Label, OutputSpend, UtxoTx,
 };
-use ct_heuristics::btc::{TxShape, classify, detect_change, is_peel_step, service_from_summary};
+use ct_heuristics::btc::dormancy::SAMPLE_INPUTS;
+use ct_heuristics::btc::{
+    Dormancy, TxShape, classify, detect_change, dormancy, is_peel_step, service_from_summary,
+};
 use ct_providers::{BitcoinProvider, ProviderError};
 use serde::{Deserialize, Serialize};
 
@@ -306,6 +309,66 @@ impl<'a> Tracer<'a> {
                 evidence: hint.evidence,
             },
         ))
+    }
+
+    /// For a consolidation, sample the largest inputs' ages. Mostly long-dormant inputs mean
+    /// an owner gathering old coins, not a service sweeping fresh deposits.
+    async fn consolidation_dormancy(&mut self, tx: &UtxoTx) -> Option<Dormancy> {
+        let spend_time = tx.block.as_ref()?.time;
+        let mut inputs: Vec<_> = tx.inputs.iter().filter(|i| i.prev_txid.is_some()).collect();
+        inputs.sort_by_key(|i| std::cmp::Reverse(i.value));
+        let mut prevs: Vec<String> = Vec::new();
+        for i in inputs {
+            let p = i.prev_txid.clone().expect("filtered");
+            if !prevs.contains(&p) {
+                prevs.push(p);
+            }
+            if prevs.len() == SAMPLE_INPUTS {
+                break;
+            }
+        }
+        let mut created = Vec::new();
+        for p in prevs {
+            if !self.budget_left(&p) {
+                break;
+            }
+            if let Ok(prev) = self.tx(&p).await
+                && let Some(b) = prev.block
+            {
+                created.push(b.time);
+            }
+        }
+        dormancy(spend_time, &created)
+    }
+
+    /// The service confidence of a transaction shape, unless it is a consolidation of
+    /// long-dormant coins. Returns the confidence (if it still counts as a service) and a
+    /// note explaining a downgrade.
+    async fn service_shape(
+        &mut self,
+        tx: &UtxoTx,
+        shape: &TxShape,
+    ) -> (Option<Confidence>, Option<String>) {
+        let Some(conf) = shape
+            .service_confidence()
+            .filter(|c| *c >= self.config.stop_confidence)
+        else {
+            return (None, None);
+        };
+        if matches!(shape, TxShape::Consolidation { .. })
+            && let Some(d) = self.consolidation_dormancy(tx).await
+            && d.mostly_dormant()
+        {
+            return (
+                None,
+                Some(format!(
+                    "{}; {}: treated as the owner consolidating old coins, not a service sweep",
+                    shape.describe(),
+                    d.describe()
+                )),
+            );
+        }
+        (Some(conf), None)
     }
 
     /// Whether a label is strong enough, and of an endpoint category, to stop the trace.
@@ -620,9 +683,8 @@ impl<'a> Tracer<'a> {
                 );
                 continue;
             }
-            if let Some(conf) = shape.service_confidence()
-                && conf >= self.config.stop_confidence
-            {
+            let (service, dormant_note) = self.service_shape(&stx, &shape).await;
+            if let Some(conf) = service {
                 let what = match &shape {
                     TxShape::Consolidation {
                         distinct_inputs, ..
@@ -680,7 +742,8 @@ impl<'a> Tracer<'a> {
             if peel {
                 self.stats.peel_steps += 1;
             }
-            let note = (shape != TxShape::Simple).then(|| shape.describe());
+            let note =
+                dormant_note.or_else(|| (shape != TxShape::Simple).then(|| shape.describe()));
             let mut allocated = 0u64;
             for o in stx.outputs.iter().filter(|o| o.script_type.is_spendable()) {
                 let share = (coin.amount as u128 * o.value as u128 / total_in) as u64;
@@ -846,9 +909,8 @@ impl<'a> Tracer<'a> {
                 }
                 _ => {}
             }
-            if let Some(conf) = shape.service_confidence()
-                && conf >= self.config.stop_confidence
-            {
+            let (service, dormant_note) = self.service_shape(&tx, &shape).await;
+            if let Some(conf) = service {
                 // Funds left a service wallet (withdrawal batch or swept hot wallet).
                 let what = format!("funds sent in a {}", shape.describe());
                 let (title, category, sender, claim) = match self.name_service(&tx, false) {
@@ -904,7 +966,8 @@ impl<'a> Tracer<'a> {
             if let Some(max_i) = (0..tx.inputs.len()).max_by_key(|&i| tx.inputs[i].value) {
                 shares[max_i] += remainder;
             }
-            let note = (shape != TxShape::Simple).then(|| shape.describe());
+            let note =
+                dormant_note.or_else(|| (shape != TxShape::Simple).then(|| shape.describe()));
             for (input, share) in tx.inputs.iter().zip(shares) {
                 if share == 0 {
                     continue;

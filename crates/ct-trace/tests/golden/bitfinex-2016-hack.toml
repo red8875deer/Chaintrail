@@ -1,0 +1,22 @@
+[case]
+id = "bitfinex-2016-hack"
+title = "2016 Bitfinex hack: stolen coins dormant for 6 years, consolidated on 2022-02-01 into the address the US seized ~94,6xx BTC from"
+document = "https://www.justice.gov/archives/opa/press-release/file/1470211/dl?inline="
+quote = "Lichtenstein fraudulently authorized more than 2,000 transactions in which 119,754 bitcoin was transferred from Bitfinex to a cryptocurrency wallet in Lichtenstein's control"
+status = """On-chain flow verified. Weakest case: the seed output was created during the hack \
+window (2016-08-02) and the destination received 94,643 BTC on 2022-02-01, but neither \
+address has been checked against the statement of facts. Kept mainly as a regression test for \
+the dormancy rule: the thief's own consolidations must not be reported as a service."""
+recording = "bitfinex-2016-hack.json"
+
+[trace]
+direction = "forward"
+txid = "01c7cdfe8ff23da7ab14a1a30e84373fe3f0d45f428de3c5cbf72253ca807904"
+vout = 0
+max_hops = 2
+max_txs = 20
+
+[[expect]]
+address = "bc1qazcm763858nkj2dj986etajv6wquslv8uxwczt"
+min_sats = 10_900_000_000
+why = """the 109 BTC output reaches the seized wallet in one hop, and its change does too, two hops later, through another of the thief's consolidations (which must not be mistaken for a service sweep: dormancy rule)"""

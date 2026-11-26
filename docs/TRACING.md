@@ -110,6 +110,13 @@ high-confidence link.
 | Batch payout: many distinct output addresses, fewer inputs | ≥ 20 | ≥ 50 | ≥ 100 |
 | Busy address: transactions and spent outputs | — | ≥ 1,000 and ≥ 100 | ≥ 10,000 and ≥ 1,000 |
 
+**Dormancy rule:** before a consolidation is treated as a service, the five largest inputs
+are checked. If most had been unspent for more than 90 days, it is an owner consolidating
+old coins (for example a thief moving stolen funds years later), not a service sweeping
+fresh deposits, and the trace continues through it. Measured on real transactions: exchange
+and darknet-market sweeps had input ages of 0–40 days; the 2016 Bitfinex thief's 2022
+consolidations about 2,009 days. The `bitfinex-2016-hack` golden case fails without this rule.
+
 Small fan-outs are not treated as services because launderers also spread funds over a few
 dozen mule addresses. Addresses that only receive (donation addresses, dust targets) are
 not treated as services.
@@ -163,7 +170,21 @@ The rule used is recorded with every trace.
 
 A path's confidence is the **lowest** confidence of any hop on it.
 
-## 7. Known limits
+## 7. Golden cases
+
+`crates/ct-trace/tests/golden/` holds fund flows documented by US government sources,
+replayed offline from recorded chain data on every test run:
+
+| Case | What the trace must reproduce |
+|---|---|
+| Colonial Pipeline (2021) | 75 BTC ransom → the address the FBI seized 63.7 BTC from |
+| Silk Road "Individual X" (2020) | 69,370 BTC seized → the two 2012 recipient addresses (47,458 / 22,013 BTC) |
+| Bitfinex hack (2016/2022) | stolen coins → the 2022 seizure wallet, through the thief's own consolidations |
+
+On-chain flows are verified; document quotes come from search excerpts and still need
+checking against the original documents (each case file says exactly what is verified).
+
+## 8. Known limits
 
 - **Monero, shielded Zcash:** not traceable. The trace records the entry point.
 - **Off-chain exchanges / instant swappers:** the link between deposit and withdrawal is

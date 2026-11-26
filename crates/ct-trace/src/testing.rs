@@ -213,3 +213,140 @@ impl BitcoinProvider for MemoryBitcoin {
             .collect())
     }
 }
+
+/// Everything a trace fetched, so it can be replayed offline (golden tests, bug reports).
+#[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
+pub struct Recording {
+    pub txs: std::collections::BTreeMap<String, UtxoTx>,
+    pub outspends: std::collections::BTreeMap<String, Vec<OutputSpend>>,
+    /// Keyed by address string.
+    pub summaries: std::collections::BTreeMap<String, AddressSummary>,
+}
+
+/// Wraps a provider and records every successful answer.
+pub struct Recorder<'a> {
+    inner: &'a dyn BitcoinProvider,
+    recording: Mutex<Recording>,
+}
+
+impl<'a> Recorder<'a> {
+    pub fn new(inner: &'a dyn BitcoinProvider) -> Self {
+        Recorder {
+            inner,
+            recording: Mutex::new(Recording::default()),
+        }
+    }
+
+    pub fn into_recording(self) -> Recording {
+        self.recording.into_inner().unwrap()
+    }
+}
+
+#[async_trait]
+impl BitcoinProvider for Recorder<'_> {
+    fn name(&self) -> &str {
+        self.inner.name()
+    }
+
+    async fn tip_height(&self) -> Result<u64, ProviderError> {
+        self.inner.tip_height().await
+    }
+
+    async fn address_summary(&self, address: &Address) -> Result<AddressSummary, ProviderError> {
+        let s = self.inner.address_summary(address).await?;
+        self.recording
+            .lock()
+            .unwrap()
+            .summaries
+            .insert(address.as_str().to_string(), s.clone());
+        Ok(s)
+    }
+
+    async fn address_txs(
+        &self,
+        address: &Address,
+        after_txid: Option<&str>,
+    ) -> Result<Vec<UtxoTx>, ProviderError> {
+        self.inner.address_txs(address, after_txid).await
+    }
+
+    async fn tx(&self, txid: &str) -> Result<UtxoTx, ProviderError> {
+        let t = self.inner.tx(txid).await?;
+        self.recording
+            .lock()
+            .unwrap()
+            .txs
+            .insert(txid.to_string(), t.clone());
+        Ok(t)
+    }
+
+    async fn outspends(&self, txid: &str) -> Result<Vec<OutputSpend>, ProviderError> {
+        let s = self.inner.outspends(txid).await?;
+        self.recording
+            .lock()
+            .unwrap()
+            .outspends
+            .insert(txid.to_string(), s.clone());
+        Ok(s)
+    }
+}
+
+/// Serves exactly what a [`Recording`] holds; anything else is "not found".
+pub struct Replay {
+    recording: Recording,
+}
+
+impl Replay {
+    pub fn new(recording: Recording) -> Self {
+        Replay { recording }
+    }
+}
+
+#[async_trait]
+impl BitcoinProvider for Replay {
+    fn name(&self) -> &str {
+        "replay"
+    }
+
+    async fn tip_height(&self) -> Result<u64, ProviderError> {
+        Ok(self
+            .recording
+            .txs
+            .values()
+            .filter_map(|t| t.block.as_ref().map(|b| b.height))
+            .max()
+            .unwrap_or(0))
+    }
+
+    async fn address_summary(&self, address: &Address) -> Result<AddressSummary, ProviderError> {
+        self.recording
+            .summaries
+            .get(address.as_str())
+            .cloned()
+            .ok_or_else(|| ProviderError::NotFound(address.to_string()))
+    }
+
+    async fn address_txs(
+        &self,
+        _address: &Address,
+        _after_txid: Option<&str>,
+    ) -> Result<Vec<UtxoTx>, ProviderError> {
+        Err(ProviderError::Unsupported("replay".into()))
+    }
+
+    async fn tx(&self, txid: &str) -> Result<UtxoTx, ProviderError> {
+        self.recording
+            .txs
+            .get(txid)
+            .cloned()
+            .ok_or_else(|| ProviderError::NotFound(txid.to_string()))
+    }
+
+    async fn outspends(&self, txid: &str) -> Result<Vec<OutputSpend>, ProviderError> {
+        self.recording
+            .outspends
+            .get(txid)
+            .cloned()
+            .ok_or_else(|| ProviderError::NotFound(txid.to_string()))
+    }
+}
