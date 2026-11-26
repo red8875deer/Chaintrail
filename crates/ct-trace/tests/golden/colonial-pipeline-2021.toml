@@ -1,28 +1,44 @@
 [case]
 id = "colonial-pipeline-2021"
-title = "Colonial Pipeline ransom (75 BTC, May 2021) traced to the address the FBI seized 63.7 BTC from"
-document = "https://www.justice.gov/archives/opa/pr/department-justice-seizes-23-million-cryptocurrency-paid-ransomware-extortionists-darkside"
-quote = "law enforcement was able to track multiple transfers of bitcoin and identify that approximately 63.7 bitcoins, representing the proceeds of the victim's ransom payment, had been transferred to a specific address"
-status = """On-chain flow verified. The quote is from a search excerpt of the DOJ press release and \
-has not been checked against the page. The press release names no address; that the seizure \
-affidavit names bc1qq2eu… comes from secondary sources (blockchain analysts, news) and is \
-not yet verified against the affidavit."""
+title = "Colonial Pipeline ransom (May 2021) traced to the FBI's \"Subject Address\""
+document = "Affidavit in support of seizure warrant, Case 3:21-mj-70945-LB (N.D. Cal.), filed 06/07/21, ¶¶ 28–33: https://www.justice.gov/opa/press-release/file/1402056/download"
+quote = """¶30: "74.99998307 BTC was sent to address XXXXXXXXXXXXm9p48hx5yz5gcvmncu65w43wfytpsf" \
+¶33: "funds from the collection of addresses, totaling 69.60422177 BTC, including 63.70000000 BTC \
+accessible from address XXXXXXXXXXXXuRTnHQA8tNuG7S2pKcdNxB was transferred to address \
+XXXXXXXXXXXX950klpjcawuy4uj39ym43hs6cfsegq (the "Subject Address"), and it has not moved since.\""""
+status = """Verified against the affidavit (read 2026-11-26). The affidavit redacts the first \
+12 characters of each address; every expected address below ends with the suffix the \
+affidavit prints, and the amounts match the affidavit to within transaction fees."""
 recording = "colonial-pipeline-2021.json"
 
 [trace]
 direction = "forward"
-# 75 BTC ransom arriving at bc1q7eqww9dmm9p48hx5yz5gcvmncu65w43wfytpsf on 2021-05-08.
+# ¶30: the 74.99998307 BTC output to …m9p48hx5yz5gcvmncu65w43wfytpsf.
 txid = "fc78327d4e46dac01dc313067b1ac7f274cdb3a07ea9f28f6f71473145f1b264"
 vout = 1
-max_hops = 4
+max_hops = 3
 max_txs = 50
 
 [[expect]]
-address = "bc1qq2euq8pw950klpjcawuy4uj39ym43hs6cfsegq"
-min_sats = 6_360_000_000
-why = "the ~63.7 BTC of ransom proceeds reach the address seized in June 2021 (3 hops)"
+address = "bc1qu57hnxf0c65fsdd5kewcsfeag6sljgfhz99zwt"
+document_suffix = "c65fsdd5kewcsfeag6sljgfhz99zwt"
+min_sats = 1_124_900_000
+why = "¶31: 11.24962019 BTC was sent to …c65fsdd5kewcsfeag6sljgfhz99zwt"
 
 [[expect]]
-address = "bc1qpx7vyv5tp7dm0g475ev527krg764t73dh77gls"
-min_sats = 5_800_000_000
-why = "63.69996546 BTC left for the seizure transfer on 2021-06-07; under pro-rata ≥ 58 BTC of it is ransom"
+address = "bc1qxu83k5qkj8kcqdqqenwzn7khcw4llfykeqwg45"
+document_suffix = "j8kcqdqqenwzn7khcw4llfykeqwg45"
+min_sats = 6_374_900_000
+why = "¶31: 63.74998561 BTC was sent to …j8kcqdqqenwzn7khcw4llfykeqwg45"
+
+[[expect]]
+address = "3EYkxQSUv2KcuRTnHQA8tNuG7S2pKcdNxB"
+document_suffix = "uRTnHQA8tNuG7S2pKcdNxB"
+min_sats = 6_369_900_000
+why = "¶32: 63.70000000 BTC was sent to …uRTnHQA8tNuG7S2pKcdNxB"
+
+[[expect]]
+address = "bc1qq2euq8pw950klpjcawuy4uj39ym43hs6cfsegq"
+document_suffix = "950klpjcawuy4uj39ym43hs6cfsegq"
+min_sats = 6_369_000_000
+why = "¶33: 69.60422177 BTC including the 63.7 BTC reached the Subject Address"

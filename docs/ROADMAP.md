@@ -35,7 +35,7 @@ Dates are not committed; quality is.
 - [x] User labels (`labels add`) stored locally; same-id packs replace built-in ones
 - [x] Traces name detected services through labels on addresses of the same wallet
 - [x] Golden cases: 3 publicly documented traces replayed offline as regression tests (Colonial Pipeline, Silk Road "Individual X", Bitfinex hack)
-- [ ] Check the golden-case quotes against the original court documents (currently from search excerpts)
+- [x] Golden-case quotes checked against the original court documents (Colonial and Silk Road verified; Bitfinex document names no addresses)
 - [x] Dormancy rule: consolidations of long-dormant coins are not mistaken for service sweeps (found by the Bitfinex golden case)
 - [ ] Bridge deposit addresses (needed with Ethereum support, Phase 4)
 - [ ] Fresh exchange proof-of-reserves lists directly from the exchanges (current lists date from 2022)

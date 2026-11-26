@@ -52,6 +52,8 @@ struct Expect {
     /// ...with at least this many sats in total.
     min_sats: u64,
     why: String,
+    /// The part of the address the document prints (documents often redact the start).
+    document_suffix: Option<String>,
 }
 
 #[tokio::test]
@@ -102,6 +104,14 @@ async fn golden_cases() {
             case.case.id
         );
         for e in &case.expect {
+            if let Some(sfx) = &e.document_suffix {
+                assert!(
+                    e.address.ends_with(sfx.as_str()),
+                    "{}: {} does not match the document's {sfx}",
+                    case.case.id,
+                    e.address
+                );
+            }
             let target = Address::parse(Chain::Bitcoin, &e.address).unwrap();
             let into: u64 = report
                 .flows

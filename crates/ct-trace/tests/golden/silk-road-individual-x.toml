@@ -1,16 +1,21 @@
 [case]
 id = "silk-road-individual-x"
 title = "Silk Road 'Individual X': 69,370 BTC seized in Nov 2020 traced back to the two 2012 recipient addresses"
-document = "https://www.justice.gov/usao-ndca/pr/united-states-files-civil-action-forfeit-cryptocurrency-valued-over-one-billion-us"
-quote = "On or about April 9, 2013, the above two recipient bitcoin addresses sent 69,471.082201 bitcoin out to 1HQ3."
-status = """On-chain flow verified to the satoshi (tx 5d9ef693… sent exactly 69,471.082201 BTC from \
-1BBqjK… and 1BADzn… to 1HQ3Go…). The quote is from a search excerpt of the DOJ forfeiture \
-complaint and has not been checked against the document."""
+document = "Complaint for forfeiture, Case 3:20-cv-07811-VC (N.D. Cal.), ¶¶ 15–17: https://www.justice.gov/usao-ndca/press-release/file/1334771/dl"
+quote = """¶15: "From this review they observed 54 transactions that were sent from Bitcoin addresses \
+controlled by Silk Road, to two Bitcoin addresses: 1BADznNF3W1gi47R65MQs754KB7zTaGuYZ and \
+1BBqjKsYuLEUE9Y5WzdbzCtYzCiQgHqtPN totaling 70,411.46 BTC" ¶17: "On approximately April 9, \
+2013, the Bitcoin addresses that received the 70,411.46 Bitcoin from Silk Road sent \
+69,471.082201 (approximately $14 million at the time of transfer) to \
+1HQ3Go3ggs8pFnXuHVHRytPCq5fGG8Hbhx (hereafter "1HQ3").\""""
+status = """Verified against the complaint (read 2026-11-26): full addresses and the \
+69,471.082201 BTC amount appear verbatim; on-chain, tx 5d9ef693… sent exactly that amount \
+from the two addresses to 1HQ3Go…. The 2020 seizure transfer (seed) is identified on-chain \
+by amount and date; the complaint describes the seizure without that txid."""
 recording = "silk-road-individual-x.json"
 
 [trace]
 direction = "backward"
-# Nov 2020 transfer of the 69,369 BTC to the government-controlled address.
 txid = "3f036ff88bb851b57a1e28780dbce35a6457a8b57995c095b55b3b0cf48ba9fd"
 vout = 0
 max_hops = 3
@@ -19,9 +24,9 @@ max_txs = 25
 [[expect]]
 address = "1BBqjKsYuLEUE9Y5WzdbzCtYzCiQgHqtPN"
 min_sats = 4_700_000_000_000
-why = "47,458 BTC of the 2013 consolidation came from this 2012 recipient address"
+why = "¶15/¶17: recipient address; 47,458 BTC of the 2013 transfer came from it"
 
 [[expect]]
 address = "1BADznNF3W1gi47R65MQs754KB7zTaGuYZ"
 min_sats = 2_190_000_000_000
-why = "22,013 BTC of the 2013 consolidation came from this 2012 recipient address"
+why = "¶15/¶17: recipient address; 22,013 BTC of the 2013 transfer came from it"

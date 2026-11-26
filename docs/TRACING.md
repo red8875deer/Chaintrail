@@ -175,14 +175,13 @@ A path's confidence is the **lowest** confidence of any hop on it.
 `crates/ct-trace/tests/golden/` holds fund flows documented by US government sources,
 replayed offline from recorded chain data on every test run:
 
-| Case | What the trace must reproduce |
-|---|---|
-| Colonial Pipeline (2021) | 75 BTC ransom → the address the FBI seized 63.7 BTC from |
-| Silk Road "Individual X" (2020) | 69,370 BTC seized → the two 2012 recipient addresses (47,458 / 22,013 BTC) |
-| Bitfinex hack (2016/2022) | stolen coins → the 2022 seizure wallet, through the thief's own consolidations |
+| Case | Document | What the trace must reproduce | Verified against the document |
+|---|---|---|---|
+| Colonial Pipeline (2021) | Seizure affidavit 3:21-mj-70945-LB, ¶¶ 28–33 | every hop of the affidavit's trail to the FBI's "Subject Address", amounts to within fees | Yes: each address ends with the suffix the (redacted) affidavit prints |
+| Silk Road "Individual X" (2020) | Forfeiture complaint 3:20-cv-07811-VC, ¶¶ 15–17 | 69,370 BTC → the two 2012 recipient addresses (47,458 / 22,013 BTC) | Yes: full addresses and amounts verbatim |
+| Bitfinex hack (2016/2022) | Statement of facts 1:22-mj-00022-RMM, ¶¶ 4–6 | stolen coins → the 2022 seizure wallet, through the thief's own consolidations | Partly: hack and seizure confirmed, addresses not named (regression test for the dormancy rule) |
 
-On-chain flows are verified; document quotes come from search excerpts and still need
-checking against the original documents (each case file says exactly what is verified).
+Each case file quotes the document and states exactly what is and is not verified.
 
 ## 8. Known limits
 

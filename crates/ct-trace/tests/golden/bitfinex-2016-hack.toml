@@ -1,12 +1,19 @@
 [case]
 id = "bitfinex-2016-hack"
 title = "2016 Bitfinex hack: stolen coins dormant for 6 years, consolidated on 2022-02-01 into the address the US seized ~94,6xx BTC from"
-document = "https://www.justice.gov/archives/opa/press-release/file/1470211/dl?inline="
-quote = "Lichtenstein fraudulently authorized more than 2,000 transactions in which 119,754 bitcoin was transferred from Bitfinex to a cryptocurrency wallet in Lichtenstein's control"
-status = """On-chain flow verified. Weakest case: the seed output was created during the hack \
-window (2016-08-02) and the destination received 94,643 BTC on 2022-02-01, but neither \
-address has been checked against the statement of facts. Kept mainly as a regression test for \
-the dormancy rule: the thief's own consolidations must not be reported as a service."""
+document = "Statement of facts, Case 1:22-mj-00022-RMM (D.D.C.), filed 02/07/22, ¶¶ 4–6: https://www.justice.gov/archives/opa/press-release/file/1470211/dl?inline="
+quote = """¶4: "the hacker was able to initiate over 2,000 unauthorized BTC transactions, in which \
+approximately 119,754 BTC was transferred from Victim VCE's wallets to an outside wallet \
+(Wallet 1CGA4s)" ¶6: "Between January 31, 2022, and February 1, 2022, law enforcement [...] \
+used the private keys from LICHTENSTEIN's file to seize Wallet 1CGA4's remaining balance of \
+approximately 94,636 BTC\""""
+status = """Read against the statement of facts (2026-11-26): it confirms the hack and the \
+seizure of ~94,636 BTC on 31 Jan–1 Feb 2022, but names the wallet only as "Wallet 1CGA4s" \
+(footnote 5: wallets are named by the first six characters of an associated address) and gives \
+no full address or txid. The link between this seed, bc1qazcm… (94,643 BTC received on \
+2022-02-01) and that seizure is an on-chain inference (hack-window origin, date, amount); no \
+address in the recorded transactions starts with 1CGA4s. Kept as a regression test for the \
+dormancy rule, not as a document-verified case."""
 recording = "bitfinex-2016-hack.json"
 
 [trace]
