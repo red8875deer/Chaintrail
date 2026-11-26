@@ -35,8 +35,10 @@ from it by pure, unit-tested functions (`app/ui/src/lib/graph.ts`, `buildDisplay
   graphs have no permanent label (hover shows it); amounts on the selected route always show.
 - **No piled-up arrows or amounts, no lines through labels:** arrows sit mid-edge (never
   under a node's label). Where 3+ edges meet at one node they are drawn as a comb (one
-  trunk, a horizontal stub per branch) with each amount on its own stub. Any other edge
-  that would cross a node or a label is bent around it. When nodes are added or removed
+  trunk, a horizontal stub per branch) with each amount on its own stub. Node sizes in the
+  layout include their labels. Any other edge that would cross a node or a label, or whose
+  amount would land on another amount, is bent around it (larger flows are placed first
+  and stay straight). When nodes are added or removed
   the layout is recomputed and nodes glide to their new places (no jump; none with
   reduced motion).
 - **All-outputs traces start from the transaction.** The report lists the traced outputs

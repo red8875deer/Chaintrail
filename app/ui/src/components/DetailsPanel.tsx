@@ -123,8 +123,7 @@ export function DetailsPanel(props: Parameters<typeof DetailsBody>[0]) {
   const { selection } = props;
   useEffect(() => {
     if (!selection) return;
-    const reduce = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
-    ref.current?.scrollIntoView?.({ block: "start", behavior: reduce ? "auto" : "smooth" });
+    ref.current?.scrollIntoView?.({ block: "start", behavior: "auto" });
   }, [selection]);
   return (
     <div ref={ref} className="details-anchor">

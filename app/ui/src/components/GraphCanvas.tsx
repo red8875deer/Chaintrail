@@ -35,9 +35,11 @@ const MOVE_MS = 350;
 const LAYOUT = {
   name: "dagre",
   rankDir: "LR",
-  nodeSep: 46,
-  // Room for a fan's trunk between two columns without touching either column's labels.
-  rankSep: 170,
+  // Node sizes include their labels, so a tall label never touches the node below it.
+  nodeDimensionsIncludeLabels: true,
+  nodeSep: 28,
+  // Room for a fan's trunk between two columns of labels.
+  rankSep: 110,
   edgeSep: 18,
   padding: 40,
   fit: false,
@@ -96,9 +98,10 @@ function view(cy: Core, eles: Eles, focus: Eles | null, animate: boolean, overvi
 }
 
 /**
- * Straight edges that would cross another node or a label are bent around it: try curves
- * of growing depth on either side and keep the first that is clear. Fans (combs) and loops
- * are left alone.
+ * Edges that would cross another node or label, or whose amount would land on another
+ * amount, are bent: try curves of growing depth on either side and keep the first that is
+ * clear. Larger flows are placed first, so they stay straight. Fans (combs) and loops keep
+ * their own shape; their amounts count as already placed.
  */
 function routeAroundNodes(cy: Core) {
   type Box = { x1: number; y1: number; x2: number; y2: number };
@@ -106,16 +109,40 @@ function routeAroundNodes(cy: Core) {
   const bodies = new Map<string, Box>();
   const labels = new Map<string, Box>();
   cy.nodes().forEach((n) => {
-    bodies.set(n.id(), grow(n.boundingBox({ includeLabels: true, includeOverlays: false }), 4));
-    labels.set(n.id(), grow(n.boundingBox({ includeNodes: false, includeLabels: true, includeOverlays: false }), 2));
+    bodies.set(n.id(), grow(n.boundingBox({ includeLabels: true, includeOverlays: false }), 8));
+    labels.set(n.id(), grow(n.boundingBox({ includeNodes: false, includeLabels: true, includeOverlays: false }), 4));
   });
   const inside = (p: Position, b: Box) => p.x > b.x1 && p.x < b.x2 && p.y > b.y1 && p.y < b.y2;
+  const overlaps = (a: Box, b: Box) => a.x1 < b.x2 && b.x1 < a.x2 && a.y1 < b.y2 && b.y1 < a.y2;
+  const placed: Box[] = [];
+
+  /** Where the edge's amount would be drawn (rotated with the line, lifted above it). */
+  const labelBox = (e: EdgeSingular, ctrl: Position | null): Box | null => {
+    const label = String(e.data("label") ?? "");
+    if (!label || !e.style("label")) return null;
+    const s = e.source().position();
+    const t = e.target().position();
+    const mid = ctrl ? { x: (s.x + 2 * ctrl.x + t.x) / 4, y: (s.y + 2 * ctrl.y + t.y) / 4 } : { x: (s.x + t.x) / 2, y: (s.y + t.y) / 2 };
+    const a = Math.atan2(t.y - s.y, t.x - s.x);
+    const w = label.length * 7.4 + 6;
+    const h = 18;
+    const hw = (w * Math.abs(Math.cos(a)) + h * Math.abs(Math.sin(a))) / 2;
+    const hh = (w * Math.abs(Math.sin(a)) + h * Math.abs(Math.cos(a))) / 2;
+    const cy_ = mid.y + Number(e.data("labelDy") ?? -8);
+    return { x1: mid.x - hw, x2: mid.x + hw, y1: cy_ - hh, y2: cy_ + hh };
+  };
+
   const blocked = (e: EdgeSingular, ctrl: Position | null) => {
     const s = e.source().position();
     const t = e.target().position();
     const own = [e.source().id(), e.target().id()];
-    for (let k = 2; k <= 28; k++) {
-      const u = k / 30;
+    const lb = labelBox(e, ctrl);
+    if (lb) {
+      for (const [id, b] of bodies) if (!own.includes(id) && overlaps(lb, b)) return true;
+      for (const b of placed) if (overlaps(lb, b)) return true;
+    }
+    for (let k = 3; k <= 57; k++) {
+      const u = k / 60;
       const p = ctrl
         ? {
             x: (1 - u) * (1 - u) * s.x + 2 * (1 - u) * u * ctrl.x + u * u * t.x,
@@ -133,33 +160,54 @@ function routeAroundNodes(cy: Core) {
     }
     return false;
   };
-  cy.edges().forEach((e) => {
+
+  const edges = cy.edges().sort((a, b) => Number(b.data("amount") ?? 0) - Number(a.data("amount") ?? 0));
+  edges.forEach((e) => {
     e.removeStyle("curve-style control-point-distances control-point-weights");
+  });
+  // Combs and loops keep their shape; their amounts are fixed obstacles.
+  edges.forEach((e) => {
+    if (e.isLoop() || e.hasClass("fan-in") || e.hasClass("fan-out")) {
+      const b = e.boundingBox({ includeNodes: false, includeEdges: false, includeLabels: true, includeOverlays: false });
+      if (b.w > 1 && b.h > 1) placed.push(b);
+    }
+  });
+  edges.forEach((e) => {
     if (e.isLoop() || e.hasClass("fan-in") || e.hasClass("fan-out")) return;
-    if (!blocked(e, null)) return;
-    const s = e.source().position();
-    const t = e.target().position();
-    const len = Math.hypot(t.x - s.x, t.y - s.y) || 1;
-    const nx = -(t.y - s.y) / len;
-    const ny = (t.x - s.x) / len;
-    const mid = { x: (s.x + t.x) / 2, y: (s.y + t.y) / 2 };
-    for (const d of [50, -50, 90, -90, 140, -140, 200, -200, 270, -270]) {
-      const ctrl = { x: mid.x + nx * d, y: mid.y + ny * d };
-      if (!blocked(e, ctrl)) {
-        // Cytoscape measures the distance perpendicular to source→target; check which sign
-        // matches by reading the control point back.
+    let ctrl: Position | null = null;
+    let d = 0;
+    if (blocked(e, null)) {
+      const s = e.source().position();
+      const t = e.target().position();
+      const len = Math.hypot(t.x - s.x, t.y - s.y) || 1;
+      const nx = -(t.y - s.y) / len;
+      const ny = (t.x - s.x) / len;
+      const mid = { x: (s.x + t.x) / 2, y: (s.y + t.y) / 2 };
+      for (const c of [50, -50, 90, -90, 140, -140, 200, -200, 270, -270]) {
+        const p = { x: mid.x + nx * c, y: mid.y + ny * c };
+        if (!blocked(e, p)) {
+          ctrl = p;
+          d = c;
+          break;
+        }
+      }
+      if (ctrl) {
+        // Same sign convention as Cytoscape: distance along the left-hand normal of
+        // source→target (checked in the browser).
         e.style({ "curve-style": "unbundled-bezier", "control-point-distances": d, "control-point-weights": 0.5 });
-        const cp = (e as unknown as { controlPoints(): Position[] | undefined }).controlPoints()?.[0];
-        if (cp && Math.hypot(cp.x - ctrl.x, cp.y - ctrl.y) > 1) e.style("control-point-distances", -d);
-        return;
       }
     }
+    const lb = labelBox(e, ctrl);
+    if (lb) placed.push(lb);
   });
 }
 
 /** Move nodes from `from` to where they are now, smoothly (or not at all if reduced motion). */
 function glide(cy: Core, from: Map<string, Position>) {
   if (reducedMotion()) return;
+  // While nodes pass each other, Cytoscape warns about edges it cannot draw for a frame.
+  cytoscape.warnings(false);
+  setTimeout(() => cytoscape.warnings(true), MOVE_MS + 100);
   cy.nodes().forEach((n) => {
     const to = { ...n.position() };
     const start = from.get(n.id());
