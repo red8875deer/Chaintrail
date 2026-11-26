@@ -767,3 +767,77 @@ async fn consolidation_of_long_dormant_coins_is_followed_not_called_a_service() 
     let note = r.flows.iter().find_map(|f| f.note.clone()).unwrap();
     assert!(note.contains("not a service sweep"), "{note}");
 }
+
+#[tokio::test]
+async fn graph_of_a_trace() {
+    use ct_trace::graph::{NodeKind, build};
+    // Victim → scammer (seed) → split; one branch into a CoinJoin, one at rest.
+    let cj_ins: Vec<(String, u32, ct_core::Address, u64)> = (0..5)
+        .map(|i| {
+            if i == 0 {
+                (txid(2), 0, addr(5), BTC / 2)
+            } else {
+                (txid(700 + i), 0, addr(50 + i as u8), BTC / 2)
+            }
+        })
+        .collect();
+    let ins: Vec<(&str, u32, &ct_core::Address, u64)> = cj_ins
+        .iter()
+        .map(|(t, v, a, x)| (t.as_str(), *v, a, *x))
+        .collect();
+    let outs_addrs: Vec<_> = (0..5).map(|i| addr(60 + i)).collect();
+    let outs: Vec<(&ct_core::Address, u64)> = outs_addrs.iter().map(|a| (a, BTC / 4)).collect();
+    let t2 = tx(
+        &txid(2),
+        101,
+        &[(&txid(1), 0, &addr(2), BTC)],
+        &[(&addr(5), BTC / 2), (&addr(6), BTC / 2 - 1_000)],
+    );
+    let cj = tx(&txid(3), 102, &ins, &outs);
+    let p = MemoryBitcoin::new([victim_payment(), t2, cj]);
+    let r = run(
+        &p,
+        Seed::Output {
+            txid: txid(1),
+            vout: 0,
+        },
+        forward(),
+    )
+    .await;
+    let g = build(&r);
+
+    let node = |id: &str| g.nodes.iter().find(|n| n.id == id).unwrap();
+    let seed = node(addr(2).as_str());
+    assert!(seed.seed);
+    assert_eq!(seed.hop, 0);
+    assert_eq!(seed.amount_out, BTC - 1_000);
+    let rest = node(addr(6).as_str());
+    assert!(rest.lead.is_some());
+    assert_eq!(rest.hop, 1);
+    // The CoinJoin is a transaction node reached from addr 5.
+    let mixer = g
+        .nodes
+        .iter()
+        .find(|n| n.kind == NodeKind::Transaction)
+        .unwrap();
+    assert_eq!(mixer.category, Some(EntityCategory::Mixer));
+    assert!(
+        g.edges
+            .iter()
+            .any(|e| e.source == addr(5).as_str() && e.target == mixer.id)
+    );
+    // Every edge connects existing nodes.
+    for e in &g.edges {
+        assert!(g.nodes.iter().any(|n| n.id == e.source));
+        assert!(g.nodes.iter().any(|n| n.id == e.target));
+    }
+    // Every lead appears on some node.
+    for i in 0..r.leads.len() {
+        assert!(
+            g.nodes
+                .iter()
+                .any(|n| n.lead.as_ref().is_some_and(|l| l.index == i)),
+            "lead {i}"
+        );
+    }
+}

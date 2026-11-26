@@ -1,0 +1,26 @@
+[package]
+name = "chaintrail-app"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.90"
+license = "Apache-2.0"
+description = "ChainTrail desktop app"
+publish = false
+
+# Kept out of the main workspace so core CI stays fast and needs no GUI libraries.
+[workspace]
+
+[build-dependencies]
+tauri-build = { version = "2.7", features = [] }
+
+[dependencies]
+tauri = { version = "2.12", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+ct-service = { path = "../../crates/ct-service" }
+ct-trace = { path = "../../crates/ct-trace" }
+
+[profile.release]
+lto = "thin"
+codegen-units = 4
+strip = true

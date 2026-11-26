@@ -4,6 +4,7 @@
 
 mod labels_cmd;
 mod lookup;
+mod serve;
 mod trace_cmd;
 
 use std::io::Write as _;
@@ -48,6 +49,17 @@ enum Command {
     /// Address labels: who owns an address, according to whom.
     #[command(subcommand)]
     Labels(LabelsCommand),
+    /// Run the app in your browser (this computer only).
+    Serve {
+        #[arg(long, default_value_t = 7878)]
+        port: u16,
+        /// Folder with the built UI (default: app/ui/dist if it exists).
+        #[arg(long)]
+        ui: Option<std::path::PathBuf>,
+        /// Use this access token instead of a random one (for development).
+        #[arg(long)]
+        token: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -134,6 +146,23 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
     let output = match cli.command {
         Command::Check { address } => lookup::check(&address, cli.json)?,
+        Command::Serve { port, ui, token } => {
+            let service = ct_service::AppService::new(ct_service::ServiceConfig {
+                cache: cli.cache.clone(),
+                no_cache: cli.no_cache,
+                extra_labels: cli.labels.clone(),
+            })?;
+            let ui = ui.or_else(|| {
+                let d = std::path::PathBuf::from("app/ui/dist");
+                d.join("index.html").exists().then_some(d)
+            });
+            let token = match token {
+                Some(t) => t,
+                None => serve::new_token()?,
+            };
+            serve::run(service, port, ui, token).await?;
+            String::new()
+        }
         Command::Labels(cmd) => match cmd {
             LabelsCommand::Lookup { address } => {
                 let index = labels_cmd::load_index(cli.labels.as_deref())?;

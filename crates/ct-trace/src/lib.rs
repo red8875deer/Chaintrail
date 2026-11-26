@@ -6,11 +6,13 @@
 //! leads plus the flows behind them.
 
 pub mod btc;
+pub mod graph;
 pub mod labels;
 pub mod report;
 pub mod testing;
 
 pub use btc::{Seed, trace_bitcoin};
+pub use graph::{GraphEdge, GraphNode, GraphView, NodeKind};
 pub use labels::{LabelLookup, MemoryLabels, NoLabels};
 pub use report::{
     Direction, Flow, FlowRole, LabelSeen, Lead, LeadKind, Progress, StopReason, TraceConfig,

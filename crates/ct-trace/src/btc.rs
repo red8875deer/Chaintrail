@@ -72,6 +72,7 @@ pub async fn trace_bitcoin(
         flows: Vec::new(),
         labels_seen: Vec::new(),
         stats: TraceStats::default(),
+        via: None,
     };
     let seed_tx = t.tx(seed.txid()).await?;
     let seed_outputs: Vec<(u32, Option<Address>, u64)> = match &seed {
@@ -198,6 +199,8 @@ struct Tracer<'a> {
     flows: Vec<Flow>,
     labels_seen: Vec<LabelSeen>,
     stats: TraceStats,
+    /// Address currently being processed; stamped on leads as `via`.
+    via: Option<Address>,
 }
 
 /// A service named through labels on addresses of the same wallet.
@@ -488,6 +491,7 @@ impl<'a> Tracer<'a> {
             title,
             category,
             address,
+            via: self.via.clone(),
             txid,
             amount,
             first_time: time,
@@ -552,6 +556,7 @@ impl<'a> Tracer<'a> {
         }
 
         while let Some(coin) = pop_largest(&mut pending, |c| c.amount) {
+            self.via = coin.address.clone();
             progress(Progress {
                 txs_examined: self.stats.txs_examined,
                 pending: pending.len(),
@@ -808,6 +813,7 @@ impl<'a> Tracer<'a> {
         }
 
         while let Some(src) = pop_largest(&mut pending, |s| s.amount) {
+            self.via = src.receiver.clone();
             progress(Progress {
                 txs_examined: self.stats.txs_examined,
                 pending: pending.len(),

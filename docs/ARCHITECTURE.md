@@ -15,29 +15,25 @@ warehouse, then cluster the whole chain). Instead ChainTrail **fetches on demand
 ## Overview
 
 ```
-┌──────────────────────────── Desktop app (Tauri 2) ────────────────────────────┐
-│  React + TypeScript UI                                                         │
-│   graph canvas · leads panel · address/tx inspector · case manager · reports   │
-└───────────────────────────────▲───────────────────────────────────────────────┘
-                                │ commands / events
-┌───────────────────────────────┴───────────────────────────────────────────────┐
-│ Rust core                                                                      │
-│                                                                                │
-│  ct-trace       trace engine: forward/backward, stop at endpoints, leads       │
-│  ct-heuristics  clustering, change detection, CoinJoin, deposit-address, ...   │
-│  ct-labels      label dataset loader + matcher (data/labels/*)                 │
-│  ct-store       SQLite: cache of fetched chain data, cases, user labels        │
-│  ct-providers   chain data adapters (Esplora, Blockscout, TronGrid, ...)       │
-│                 shared HTTP client: rate limiting, retries, fallback           │
-│  ct-core        domain model: chains, addresses, assets, amounts, txs,         │
-│                 transfers, entities, labels, claims (fact/inference/label)     │
-└────────────────────────────────▲──────────────────────────────────────────────┘
-                                 │ HTTPS (free public APIs) or your own node
-                    mempool.space · Blockscout · TronGrid · OFAC list
+ ┌──────────── Desktop app (Tauri 2) ────────────┐   ┌── Browser (chaintrail serve) ──┐
+ │ React + TypeScript UI (app/ui)                 │   │ same UI, same commands          │
+ │  search · address · transaction · trace graph  │   │ POST /api/<command> on          │
+ │  leads panel · labels                          │   │ 127.0.0.1 with a per-run token  │
+ └──────────────────────▲─────────────────────────┘   └──────────────▲──────────────────┘
+                        │ invoke(<command>, { req })                  │
+                        └──────────────────┬──────────────────────────┘
+┌──────────────────────────────────────────▼─────────────────────────────────────────────┐
+│ ct-service   AppService: one method per UI command, request/response views            │
+│ ct-trace     trace engine + graph builder                                              │
+│ ct-heuristics  CoinJoin, change, shapes, dormancy, services, clusters                  │
+│ ct-labels    label packs + OFAC importer      ct-store  SQLite cache                   │
+│ ct-providers chain data adapters (Esplora, …) ct-core   domain model                    │
+└─────────────────────────────────────────▲──────────────────────────────────────────────┘
+                                          │ HTTPS (free public APIs) or your own node
+                             mempool.space · blockstream.info · OFAC list
 ```
 
-`ct-cli` exposes the same core on the command line. It is how features are built and
-tested before they get a UI.
+`ct-cli` uses the same crates on the command line. See ADR-0010 for the two front doors.
 
 ## Crates
 
@@ -50,7 +46,9 @@ tested before they get a UI.
 | `ct-heuristics` | Bitcoin done | Pure functions over `ct-core` types. Each heuristic returns a scored inference with evidence. |
 | `ct-trace` | Bitcoin done |
 | `ct-labels` | done: pack format, OFAC importer, built-in packs from `data/labels` | The tracing engine (see [TRACING.md](TRACING.md)). |
-| `app/` | planned | Tauri 2 desktop app (Windows, macOS, Linux; mobile later from the same code). |
+| `ct-service` | done | `AppService`: every UI command; request/response views (`views.rs`). |
+| `app/src-tauri` | done | Tauri 2 desktop shell; one command per `AppService` method; own Cargo workspace. |
+| `app/ui` | in progress | React + TypeScript + Cytoscape UI; `src/api/types.ts` mirrors `views.rs`. |
 
 ## Data model
 

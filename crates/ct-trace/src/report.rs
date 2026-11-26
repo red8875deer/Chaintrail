@@ -70,6 +70,10 @@ pub struct Lead {
     pub title: String,
     pub category: Option<EntityCategory>,
     pub address: Option<Address>,
+    /// The traced address next to this lead on the path: where the funds were just before
+    /// reaching it (forward) or just after leaving it (backward). Used to draw the graph.
+    #[serde(default)]
+    pub via: Option<Address>,
     /// Transaction where the lead was found.
     pub txid: Option<String>,
     /// Traced amount reaching this lead, in base units.

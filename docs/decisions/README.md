@@ -13,3 +13,5 @@ Supersede a decision with a new record instead of editing the old one.
 | [0006](0006-license.md) | Apache-2.0 licence | Accepted (revisit before outside contributions) |
 | [0007](0007-dependency-licences.md) | Permissive dependency licences only | Accepted |
 | [0008](0008-label-data.md) | Label data sources and format | Accepted |
+| [0009](0009-mpl-in-desktop-shell.md) | MPL-2.0 allowed for unmodified desktop-shell dependencies | Accepted |
+| [0010](0010-app-architecture.md) | One service, two front doors (desktop app and local browser mode) | Accepted |

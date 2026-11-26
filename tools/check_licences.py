@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Fail if any dependency's licence is outside the list allowed by ADR-0007.
 
-Usage: cargo metadata --format-version 1 | python3 tools/check_licences.py
+Usage: cargo metadata --format-version 1 | python3 tools/check_licences.py [--allow LICENCE ...]
+
+`--allow` adds licences for a specific build (e.g. MPL-2.0 for the desktop shell, ADR-0009).
 """
 
 import json
@@ -26,6 +28,13 @@ def allowed(expr):
 
 
 def main():
+    args = sys.argv[1:]
+    while args:
+        if args[0] == "--allow" and len(args) > 1:
+            ALLOWED.add(args[1])
+            args = args[2:]
+        else:
+            sys.exit(__doc__)
     meta = json.load(sys.stdin)
     bad = [
         (p["name"], p["version"], p.get("license") or "none")
