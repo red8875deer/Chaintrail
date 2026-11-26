@@ -21,6 +21,9 @@ next session can continue without re-deriving context.
 ## Layout
 - `crates/ct-core` – domain types, no I/O
 - `crates/ct-providers` – API adapters → `ct-core` types; fixtures in `tests/fixtures`
+- `crates/ct-store` – SQLite cache wrapping any provider (`CachedBitcoin`)
+- `crates/ct-heuristics` – pure heuristics (CoinJoin, change, shape, services, clusters)
+- `crates/ct-trace` – trace engine + `testing` module (in-memory provider, tx builders)
 - `crates/ct-cli` – `chaintrail` binary
 - `data/labels` – open label dataset (planned)
 
@@ -31,6 +34,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace                 # offline
 cargo test --workspace -- --ignored    # live API tests (needs network)
 cargo run -p ct-cli -- btc address <addr>
+cargo run -p ct-cli -- btc trace <txid> [--vout N | --to ADDR] [--backward]
 ```
 
 ## Conventions
@@ -38,3 +42,7 @@ cargo run -p ct-cli -- btc address <addr>
 - Amounts: raw base units `u128` + decimals. Never floats for amounts.
 - New API parsing → save a real response as a fixture and test against it.
 - Small commits; update ROADMAP checkboxes in the same commit as the feature.
+- Trace engine invariant: leads + fees + below-threshold = seed amount (tests assert it).
+- Heuristic thresholds/weights live as named constants next to their tests; change them
+  together with `docs/TRACING.md`.
+- Dependency licences: see ADR-0007 (no copyleft without a decision).

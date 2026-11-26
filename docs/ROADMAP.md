@@ -12,15 +12,22 @@ Dates are not committed; quality is.
 - [x] Move to the dedicated GitHub repository
 
 ## Phase 1: Bitcoin tracing (CLI)
-- [ ] `ct-store`: SQLite cache for txs, outspends, address pages
-- [ ] Provider fallback (mempool.space → blockstream.info) and shared rate limiter
-- [ ] Heuristics: script-type, CoinJoin detection, change detection, peel chains
-- [ ] Forward and backward trace with hop/value limits
-- [ ] Behavioural service detection (consolidations, high fan-in) → "likely exchange"
-- [ ] Leads output (CLI table + JSON)
-- [ ] First golden cases from public documents
+- [x] `ct-store`: SQLite cache for txs, outspends, address pages (confirmed data kept forever)
+- [x] Provider fallback (mempool.space → blockstream.info) and shared rate limiter
+- [x] Heuristics: tx shape, CoinJoin detection (Whirlpool, WabiSabi, generic), change detection, peel chains, clustering with evidence
+- [x] Forward and backward trace with hop / transaction / value limits, pro-rata allocation
+- [x] Behavioural service detection (busy wallets, deposit consolidations, batch payouts) → "likely service"
+- [x] Leads output (CLI + JSON) with accounting that always adds up to the traced amount
+- [ ] Golden cases from public documents (moved to Phase 2: needs sourced labels)
+
+### Follow-ups found during Phase 1
+- [ ] Reorg safety: cache transactions forever only after ~6 confirmations
+- [ ] Calibrate heuristic weights against labelled data and publish error rates
+- [ ] Change detection: fresh-address and fiat-round-amount signals
+- [ ] Let the user "continue through" a detected service or CoinJoin from a lead
 
 ## Phase 2: Labels
+- [ ] Golden cases: publicly documented traces reproduced as regression tests
 - [ ] Label file format with source, date, confidence, licence per entry
 - [ ] OFAC SDN importer
 - [ ] Exchange proof-of-reserves addresses (major exchanges)

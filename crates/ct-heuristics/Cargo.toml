@@ -1,0 +1,18 @@
+[package]
+name = "ct-heuristics"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+ct-core = { version = "0.1.0", path = "../ct-core" }
+serde = { version = "1.0.229", features = ["derive"] }
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+ct-providers = { path = "../ct-providers" }
+serde_json = "1.0.154"

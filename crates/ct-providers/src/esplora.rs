@@ -101,6 +101,20 @@ impl BitcoinProvider for Esplora {
     }
 }
 
+/// Parse a raw Esplora `/tx/:txid` JSON document. Used to load saved fixtures in tests.
+pub fn parse_tx_json(json: &str) -> std::result::Result<UtxoTx, String> {
+    serde_json::from_str::<ETx>(json)
+        .map_err(|e| e.to_string())?
+        .into_tx()
+}
+
+/// Parse a raw Esplora `/tx/:txid/outspends` JSON document.
+pub fn parse_outspends_json(json: &str) -> std::result::Result<Vec<OutputSpend>, String> {
+    serde_json::from_str::<Vec<EOutspend>>(json)
+        .map(|v| v.into_iter().map(EOutspend::into_spend).collect())
+        .map_err(|e| e.to_string())
+}
+
 // ---- Esplora JSON shapes ---------------------------------------------------------------
 
 #[derive(Debug, Deserialize)]

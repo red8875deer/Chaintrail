@@ -4,7 +4,8 @@
 Bitcoin, Ethereum and Tron, see where they end up (exchanges, mixers, bridges, DeFi
 protocols, sanctioned wallets), and get a list of leads instead of a wall of wallet IDs.
 
-> Status: early development (Phase 0 – foundations). Not ready for real investigations yet.
+> Status: early development. Bitcoin tracing works on the command line (Phase 1); labels and
+> the desktop app come next. Not ready for real investigations yet.
 > See [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## Goals
@@ -37,7 +38,15 @@ Requires a recent Rust toolchain.
 cargo run -p ct-cli -- btc address 12cbQLTFMXRnSzktFkuoG3eHoMeFtpTu3S
 cargo run -p ct-cli -- btc tx f4184fc596403b9d638783cf57adfe4c75c605f6356fbc91338530e9831e9e16
 cargo run -p ct-cli -- check TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t
+
+# Where did the 10 BTC of the first Bitcoin payment go?
+cargo run -p ct-cli -- btc trace f4184fc596403b9d638783cf57adfe4c75c605f6356fbc91338530e9831e9e16 --vout 0
+# Where did the funds of a transaction come from?
+cargo run -p ct-cli -- btc trace <txid> --backward
 ```
+
+Fetched data is cached in your user data folder (`chaintrail/cache.sqlite`), so repeat
+traces are instant. Use `--no-cache` or `--cache PATH` to change that.
 
 ## Documentation
 

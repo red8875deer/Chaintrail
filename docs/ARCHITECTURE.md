@@ -43,13 +43,13 @@ tested before they get a UI.
 
 | Crate | Status | Responsibility |
 |---|---|---|
-| `ct-core` | started | Domain types. No I/O. Everything else depends on it. |
-| `ct-providers` | started | One adapter per data source, behind per-chain traits. Converts API JSON into `ct-core` types. |
-| `ct-cli` | started | Command-line front end. |
-| `ct-store` | planned | SQLite cache + cases. Confirmed blocks never change, so cached txs are reused forever. |
-| `ct-heuristics` | planned | Pure functions over `ct-core` types. Each heuristic returns a scored inference with evidence. |
+| `ct-core` | done (Bitcoin) | Domain types. No I/O. Everything else depends on it. |
+| `ct-providers` | Bitcoin done | One adapter per data source, behind per-chain traits. Converts API JSON into `ct-core` types. |
+| `ct-cli` | `check`, `btc address`, `btc tx`, `btc trace` | Command-line front end. |
+| `ct-store` | done (Bitcoin) | SQLite cache + cases. Confirmed blocks never change, so cached txs are reused forever. |
+| `ct-heuristics` | Bitcoin done | Pure functions over `ct-core` types. Each heuristic returns a scored inference with evidence. |
 | `ct-labels` | planned | Loads `data/labels`, matches addresses to entities. |
-| `ct-trace` | planned | The tracing engine (see [TRACING.md](TRACING.md)). |
+| `ct-trace` | Bitcoin done | The tracing engine (see [TRACING.md](TRACING.md)). |
 | `app/` | planned | Tauri 2 desktop app (Windows, macOS, Linux; mobile later from the same code). |
 
 ## Data model

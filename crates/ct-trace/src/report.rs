@@ -1,0 +1,159 @@
+//! Trace configuration and results.
+
+use ct_core::{Address, Claim, Confidence, EntityCategory};
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Direction {
+    /// Where did the funds go?
+    Forward,
+    /// Where did the funds come from?
+    Backward,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TraceConfig {
+    pub direction: Direction,
+    /// Maximum transactions between the seed and a lead.
+    pub max_hops: u32,
+    /// Maximum distinct transactions fetched (keeps free APIs happy and runs bounded).
+    pub max_txs: u32,
+    /// Branches smaller than this (sats) are not followed. `None`: 0.1% of the seed amount,
+    /// at least 1,000 sats.
+    pub min_amount: Option<u64>,
+    /// Look up activity of addresses the funds reach, to detect busy service wallets.
+    pub check_addresses: bool,
+    /// Stop at services detected with at least this confidence.
+    pub stop_confidence: Confidence,
+}
+
+impl Default for TraceConfig {
+    fn default() -> Self {
+        TraceConfig {
+            direction: Direction::Forward,
+            max_hops: 8,
+            max_txs: 100,
+            min_amount: None,
+            check_addresses: true,
+            stop_confidence: Confidence::Medium,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "reason", content = "detail", rename_all = "snake_case")]
+pub enum StopReason {
+    HopLimit,
+    Budget,
+    Error(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum LeadKind {
+    /// Funds reached a labelled or behaviourally detected service, mixer, etc.
+    Endpoint,
+    /// Funds are sitting unspent.
+    AtRest,
+    /// Funds were newly mined (backward traces).
+    Mined,
+    /// Tracing stopped before reaching an endpoint.
+    Unexplored { stop: StopReason },
+}
+
+/// Where traced funds ended up (forward) or came from (backward).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Lead {
+    pub kind: LeadKind,
+    /// One-line description, e.g. "Likely service: deposit swept with 70 other addresses".
+    pub title: String,
+    pub category: Option<EntityCategory>,
+    pub address: Option<Address>,
+    /// Transaction where the lead was found.
+    pub txid: Option<String>,
+    /// Traced amount reaching this lead, in base units.
+    pub amount: u64,
+    /// Block time (Unix seconds) when funds first reached it.
+    pub first_time: Option<u64>,
+    /// Fewest hops from the seed.
+    pub hops: u32,
+    /// Weakest of the path and the lead's own claim.
+    pub confidence: Confidence,
+    /// Why we believe what the lead says.
+    pub claim: Claim,
+    /// Transactions from the seed to the lead (first path found).
+    pub path: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "role", rename_all = "snake_case")]
+pub enum FlowRole {
+    /// Believed to stay with the same owner (change output).
+    Change { confidence: Confidence },
+    /// Went to another party, as far as we can tell.
+    Payment,
+    /// Backward step: an input that funded the transaction.
+    Source,
+}
+
+/// One hop of traced value: an edge for the graph view.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Flow {
+    pub txid: String,
+    pub hop: u32,
+    pub time: Option<u64>,
+    pub from: Option<Address>,
+    pub to: Option<Address>,
+    /// Traced amount on this edge (not the full output value), base units.
+    pub amount: u64,
+    pub role: FlowRole,
+    /// The transaction is a peel-chain step.
+    pub peel: bool,
+    /// Shape of the transaction when notable (e.g. "batch payout to 24 addresses").
+    pub note: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct TraceStats {
+    pub txs_examined: u32,
+    pub addresses_checked: u32,
+    /// Traced value spent on fees (forward) — includes rounding.
+    pub fees: u64,
+    /// Traced value in branches below the minimum amount.
+    pub below_threshold: u64,
+    pub peel_steps: u32,
+    pub budget_exhausted: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TraceReport {
+    pub direction: Direction,
+    pub seed: String,
+    pub seed_amount: u64,
+    /// Allocation rule for mixed funds (`docs/TRACING.md` §5).
+    pub allocation: String,
+    pub min_amount: u64,
+    pub config: TraceConfig,
+    /// Sorted by amount, largest first.
+    pub leads: Vec<Lead>,
+    pub flows: Vec<Flow>,
+    pub stats: TraceStats,
+}
+
+impl TraceReport {
+    /// Amount accounted for by leads, fees and dust. Equals `seed_amount` by construction.
+    pub fn accounted(&self) -> u64 {
+        self.leads.iter().map(|l| l.amount).sum::<u64>()
+            + self.stats.fees
+            + self.stats.below_threshold
+    }
+}
+
+/// Progress snapshot for UIs.
+#[derive(Debug, Clone, Copy)]
+pub struct Progress {
+    pub txs_examined: u32,
+    pub pending: usize,
+    pub leads: usize,
+}

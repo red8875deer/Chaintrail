@@ -139,6 +139,17 @@ impl Address {
         })
     }
 
+    /// Bitcoin P2PKH address for a 20-byte public-key hash (HASH160).
+    pub fn bitcoin_p2pkh(hash160: [u8; 20]) -> Self {
+        let mut payload = Vec::with_capacity(21);
+        payload.push(BTC_P2PKH_VERSION);
+        payload.extend_from_slice(&hash160);
+        Address {
+            chain: Chain::Bitcoin,
+            value: bs58::encode(payload).with_check().into_string(),
+        }
+    }
+
     pub fn chain(&self) -> Chain {
         self.chain
     }
@@ -280,6 +291,18 @@ mod tests {
         assert_eq!(a.bitcoin_kind(), Some(BitcoinAddressKind::P2pkh));
         let p2sh = Address::parse(Chain::Bitcoin, "3J98t1WpEZ73CNmQviecrnyiWrnqRhWNLy").unwrap();
         assert_eq!(p2sh.bitcoin_kind(), Some(BitcoinAddressKind::P2sh));
+    }
+
+    #[test]
+    fn p2pkh_from_hash() {
+        // HASH160 of the genesis block's public key.
+        let hash: [u8; 20] = hex::decode("62e907b15cbf27d5425399ebf6f0fb50ebb88f18")
+            .unwrap()
+            .try_into()
+            .unwrap();
+        let a = Address::bitcoin_p2pkh(hash);
+        assert_eq!(a.as_str(), "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa");
+        assert_eq!(Address::parse(Chain::Bitcoin, a.as_str()).unwrap(), a);
     }
 
     #[test]
