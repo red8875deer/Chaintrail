@@ -140,11 +140,24 @@ pub struct TraceStats {
     pub budget_exhausted: bool,
 }
 
+/// One output of the seed transaction included in the trace.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SeedOutput {
+    pub txid: String,
+    pub vout: u32,
+    pub address: Option<Address>,
+    pub amount: u64,
+    pub time: Option<u64>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TraceReport {
     pub direction: Direction,
     pub seed: String,
     pub seed_amount: u64,
+    /// The outputs the trace started from (forward) or whose funding it traced (backward).
+    #[serde(default)]
+    pub seed_outputs: Vec<SeedOutput>,
     /// Allocation rule for mixed funds (`docs/TRACING.md` §5).
     pub allocation: String,
     pub min_amount: u64,

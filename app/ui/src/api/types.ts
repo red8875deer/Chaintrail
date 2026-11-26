@@ -285,10 +285,21 @@ export interface TraceConfig {
   stop_confidence: Confidence;
 }
 
+/** One output of the seed transaction included in the trace. */
+export interface SeedOutput {
+  txid: string;
+  vout: number;
+  address: Address | null;
+  amount: number;
+  time: number | null;
+}
+
 export interface TraceReport {
   direction: Direction;
   seed: string;
   seed_amount: number;
+  /** The outputs the trace started from (forward) or whose funding it traced (backward). */
+  seed_outputs: SeedOutput[];
   allocation: string;
   min_amount: number;
   config: TraceConfig;

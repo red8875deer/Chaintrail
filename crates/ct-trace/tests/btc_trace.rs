@@ -945,3 +945,86 @@ async fn graph_keeps_every_lead_that_ends_at_the_same_address() {
         *at3.iter().max_by_key(|&&i| r.leads[i].amount).unwrap()
     );
 }
+
+#[tokio::test]
+async fn graph_of_a_whole_transaction_has_one_root_paying_each_output() {
+    use ct_trace::NodeKind;
+    use ct_trace::graph::build;
+    // tx 2 pays a labelled exchange (an endpoint at once), an address that keeps the funds,
+    // and an address that moves them on.
+    let t2 = tx(
+        &txid(2),
+        101,
+        &[(&txid(1), 0, &addr(2), BTC)],
+        &[
+            (&addr(10), BTC / 2),
+            (&addr(3), BTC / 4),
+            (&addr(4), BTC / 4 - 10_000),
+        ],
+    );
+    let t3 = tx(
+        &txid(3),
+        102,
+        &[(&txid(2), 2, &addr(4), BTC / 4 - 10_000)],
+        &[(&addr(5), BTC / 4 - 20_000)],
+    );
+    let p = MemoryBitcoin::new([victim_payment(), t2, t3]);
+    let labels = MemoryLabels::new([label(
+        10,
+        "Example Exchange",
+        EntityCategory::Exchange,
+        Confidence::High,
+    )]);
+    let r = run_with_labels(&p, &labels, Seed::Tx { txid: txid(2) }, forward()).await;
+    assert_eq!(r.seed_outputs.len(), 3);
+    let g = build(&r);
+
+    let seeds: Vec<_> = g.nodes.iter().filter(|n| n.seed).collect();
+    assert_eq!(seeds.len(), 1, "{seeds:#?}");
+    assert_eq!(seeds[0].kind, NodeKind::Transaction);
+    let root = &seeds[0].id;
+    for (a, amount) in [(10, BTC / 2), (3, BTC / 4), (4, BTC / 4 - 10_000)] {
+        let e = g
+            .edges
+            .iter()
+            .find(|e| &e.source == root && e.target == addr(a).to_string())
+            .unwrap_or_else(|| panic!("no edge to addr {a}: {:#?}", g.edges));
+        assert_eq!(e.amount, amount);
+    }
+    // Every node is reachable from the root.
+    let mut seen = std::collections::HashSet::from([root.clone()]);
+    let mut queue = vec![root.clone()];
+    while let Some(id) = queue.pop() {
+        for e in g.edges.iter().filter(|e| e.source == id) {
+            if seen.insert(e.target.clone()) {
+                queue.push(e.target.clone());
+            }
+        }
+    }
+    assert_eq!(seen.len(), g.nodes.len(), "unreachable: {:#?}", g.nodes);
+}
+
+#[tokio::test]
+async fn graph_of_one_output_has_no_extra_root() {
+    use ct_trace::graph::build;
+    let t2 = tx(
+        &txid(2),
+        101,
+        &[(&txid(1), 0, &addr(2), BTC)],
+        &[(&addr(3), BTC - 10_000)],
+    );
+    let p = MemoryBitcoin::new([victim_payment(), t2]);
+    let r = run(
+        &p,
+        Seed::Output {
+            txid: txid(1),
+            vout: 0,
+        },
+        forward(),
+    )
+    .await;
+    let g = build(&r);
+    let seeds: Vec<_> = g.nodes.iter().filter(|n| n.seed).collect();
+    assert_eq!(seeds.len(), 1);
+    assert_eq!(seeds[0].id, addr(2).to_string());
+}

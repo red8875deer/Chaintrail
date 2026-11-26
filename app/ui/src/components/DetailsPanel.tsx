@@ -1,8 +1,9 @@
 // Details of the selected node, edge or lead, with every claim explained in plain words.
 
+import { useEffect, useRef } from "react";
 import type { Claim, GraphNode, Lead, TraceView } from "../api/types";
 import { formatBtcShort, formatShare, formatUtc } from "../lib/format";
-import { type Display, edgeById, isGroupId, nodeById, nodeForLead } from "../lib/graph";
+import { type Display, edgeById, isGroupId, leadPath, nodeById, nodeForLead } from "../lib/graph";
 import { categoryName, describeClaim, leadKindExplanation, leadKindName, roleText } from "../lib/meaning";
 import { type TraceParams, href } from "../lib/route";
 import { Basis, Btc, CategoryTag, Id, Meter } from "./bits";
@@ -86,9 +87,17 @@ function GroupDetails({
         <Btc sats={g.amount} /> <span className="muted small">{formatShare(g.amount, r.seed_amount)} of the traced amount</span>
       </p>
       <p className="small muted">
-        {chain
-          ? "The funds passed straight through these unlabelled addresses, one after another. They are drawn as one step to keep the graph readable."
-          : "These branches are drawn as one point to keep the graph readable. Each is still listed with the leads."}
+        {chain ? (
+          <>
+            The funds passed through these unlabelled addresses one after another; they are drawn as one step to keep the
+            graph readable. {formatBtcShort(g.amount)} BTC entered the first
+            {g.amountOut < g.amount
+              ? ` and ${formatBtcShort(g.amountOut)} BTC continued from the last. The other ${formatBtcShort(g.amount - g.amountOut)} BTC left in smaller branches (hidden at the current setting) or went to transaction fees.`
+              : "."}
+          </>
+        ) : (
+          "These branches are drawn as one point to keep the graph readable. Each is still listed with the leads."
+        )}
       </p>
       <ul className="evidence" style={{ maxHeight: 220, overflow: "auto" }}>
         {members.slice(0, 50).map((n) => (
@@ -108,7 +117,23 @@ function GroupDetails({
   );
 }
 
-export function DetailsPanel({
+/** Keeps the details in sight when something on the graph is clicked. */
+export function DetailsPanel(props: Parameters<typeof DetailsBody>[0]) {
+  const ref = useRef<HTMLDivElement>(null);
+  const { selection } = props;
+  useEffect(() => {
+    if (!selection) return;
+    const reduce = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+    ref.current?.scrollIntoView?.({ block: "nearest", behavior: reduce ? "auto" : "smooth" });
+  }, [selection]);
+  return (
+    <div ref={ref} className="details-anchor">
+      <DetailsBody {...props} />
+    </div>
+  );
+}
+
+function DetailsBody({
   view,
   display,
   onExpand,
@@ -220,6 +245,18 @@ export function DetailsPanel({
   const leadIndex = selectedLead !== null && here.includes(selectedLead) ? selectedLead : here[0];
   const lead = leadIndex !== undefined ? r.leads[leadIndex] : undefined;
   const otherLeads = here.filter((i) => i !== leadIndex);
+  // The highlighted route is one route; say so when it carries only part of the amount.
+  const routeAmount =
+    lead && leadIndex !== undefined
+      ? (() => {
+          const p = leadPath(view, leadIndex);
+          const forward = r.direction === "forward";
+          return view.graph.edges
+            .filter((e) => p.edges.has(e.id) && e.source !== e.target && (forward ? e.target : e.source) === node.id)
+            .reduce((s, e) => s + e.amount, 0);
+        })()
+      : 0;
+  const partRoute = lead !== undefined && lead.hops > 0 && routeAmount > 0 && routeAmount * 100 < lead.amount * 99;
   const seen = r.labels_seen.find((l) => l.address.value === node.address);
   const next = nextTrace(view, node, lead);
   const title = node.entity ?? (node.kind === "transaction" ? "Transaction" : node.seed ? "Start of the trace" : "Address");
@@ -253,6 +290,12 @@ export function DetailsPanel({
             Reached after {lead.hops} hop{lead.hops === 1 ? "" : "s"}
             {lead.first_time !== null ? `, first on ${formatUtc(lead.first_time)}` : ""}.
           </p>
+          {partRoute && (
+            <p className="small muted">
+              The highlighted route carries {formatBtcShort(routeAmount)} of these {formatBtcShort(lead.amount)} BTC; the rest
+              moved by other routes (smaller ones may be hidden on the graph).
+            </p>
+          )}
           {otherLeads.length > 0 && (
             <div className="small">
               Funds also reached this address by {otherLeads.length === 1 ? "another route" : `${otherLeads.length} other routes`}:

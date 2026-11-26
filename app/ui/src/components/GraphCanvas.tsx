@@ -19,9 +19,9 @@ export interface GraphControls {
   focus: (id: string) => boolean;
 }
 
-/** Below this zoom the labels (11–12px) render under ~9px; never open smaller than this.
+/** Below this zoom the labels (12–13px) render under ~10px; never open smaller than this.
  * "Fit" can still show the whole graph as an overview. */
-const MIN_READABLE_ZOOM = 0.75;
+const MIN_READABLE_ZOOM = 0.8;
 const MAX_FIT_ZOOM = 1.4;
 /** Room around the graph; more at the top (notice) and bottom (toolbar, legend). */
 const PAD = { top: 104, bottom: 96, left: 48, right: 48 };
@@ -30,7 +30,7 @@ const LAYOUT = {
   name: "dagre",
   rankDir: "LR",
   nodeSep: 46,
-  rankSep: 130,
+  rankSep: 140,
   edgeSep: 18,
   padding: 40,
   fit: false,
@@ -70,11 +70,22 @@ function view(cy: Core, eles: Eles, focus: Eles | null, animate: boolean, overvi
   const h = Math.max(cy.height() - PAD.top - PAD.bottom, 100);
   const fitZoom = Math.min(w / Math.max(bb.w, 1), h / Math.max(bb.h, 1));
   const zoom = Math.max(overview ? 0.1 : MIN_READABLE_ZOOM, Math.min(MAX_FIT_ZOOM, fitZoom));
-  const target = zoom > fitZoom && focus && focus.nonempty() ? focus : eles;
-  const tb = target.boundingBox();
+  let cx = bb.x1 + bb.w / 2;
+  let cy_ = bb.y1 + bb.h / 2;
+  if (zoom > fitZoom && focus && focus.nonempty()) {
+    // Too large to show readably: show as much of it as fits while keeping the focus (with
+    // its label) on screen, e.g. the lead at the far end of a long route.
+    const f = focus.boundingBox();
+    const halfW = w / 2 / zoom;
+    const halfH = h / 2 / zoom;
+    const m = 24 / zoom;
+    const clamp = (v: number, lo: number, hi: number) => (lo > hi ? (lo + hi) / 2 : Math.min(hi, Math.max(lo, v)));
+    cx = clamp(cx, f.x2 + m - halfW, f.x1 - m + halfW);
+    cy_ = clamp(cy_, f.y2 + m - halfH, f.y1 - m + halfH);
+  }
   const pan = {
-    x: PAD.left + w / 2 - zoom * (tb.x1 + tb.w / 2),
-    y: PAD.top + h / 2 - zoom * (tb.y1 + tb.h / 2),
+    x: PAD.left + w / 2 - zoom * cx,
+    y: PAD.top + h / 2 - zoom * cy_,
   };
   if (animate && !reducedMotion()) cy.animate({ zoom, pan }, { duration: 300 });
   else cy.viewport({ zoom, pan });
@@ -84,6 +95,7 @@ export function GraphCanvas({
   display,
   path,
   focusId,
+  viewTarget,
   selected,
   onSelect,
   controls,
@@ -93,6 +105,8 @@ export function GraphCanvas({
   path: { nodes: Set<string>; edges: Set<string> } | null;
   /** Displayed node to keep in view (the selected lead). */
   focusId: string | null;
+  /** Displayed nodes to bring into view once (e.g. the members of an opened group). */
+  viewTarget: { ids: string[] } | null;
   selected: Selection;
   onSelect: (s: Selection) => void;
   controls: RefObject<GraphControls | null>;
@@ -105,11 +119,34 @@ export function GraphCanvas({
   const focusRef = useRef(focusId);
   focusRef.current = focusId;
 
-  // Rebuild only when the drawn elements change (not on every selection).
+  // Lay out again only when the drawn nodes change. If only edges or labels change, update
+  // them in place so nothing moves.
   useEffect(() => {
     if (!host.current) return;
-    const sig = display.elements.map((e) => e.data.id).join("|");
-    if (sig === signature.current && cyRef.current) return;
+    const sig = display.elements
+      .filter((e) => e.group === "nodes")
+      .map((e) => e.data.id)
+      .join("|");
+    const current = cyRef.current;
+    if (current && sig === signature.current) {
+      const want = new Map(display.elements.map((e) => [String(e.data.id), e]));
+      current.batch(() => {
+        current.elements().forEach((el) => {
+          if (!want.has(el.id())) current.remove(el);
+        });
+        for (const [id, def] of want) {
+          const el = current.getElementById(id);
+          if (el.empty()) {
+            current.add(def);
+          } else {
+            const { id: _id, source: _s, target: _t, ...rest } = def.data;
+            el.data(rest);
+            el.classes(def.classes ?? "");
+          }
+        }
+      });
+      return;
+    }
     signature.current = sig;
     cyRef.current?.destroy();
     const cy = cytoscape({
@@ -189,6 +226,17 @@ export function GraphCanvas({
       view(cy, eles.nonempty() ? eles : cy.elements(), focus, true);
     }
   }, [display, path, focusId]);
+
+  // Bring newly opened nodes into view (once per request).
+  const shownTarget = useRef<{ ids: string[] } | null>(null);
+  useEffect(() => {
+    const cy = cyRef.current;
+    if (!cy || !viewTarget || shownTarget.current === viewTarget) return;
+    shownTarget.current = viewTarget;
+    let eles = cy.collection();
+    for (const id of viewTarget.ids) eles = eles.union(cy.getElementById(id));
+    if (eles.nonempty()) view(cy, eles, eles.first(), true);
+  }, [display, viewTarget]);
 
   // Reflect the selection.
   useEffect(() => {

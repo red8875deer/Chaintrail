@@ -19,8 +19,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::labels::LabelLookup;
 use crate::report::{
-    Direction, Flow, FlowRole, LabelSeen, Lead, LeadKind, Progress, StopReason, TraceConfig,
-    TraceReport, TraceStats,
+    Direction, Flow, FlowRole, LabelSeen, Lead, LeadKind, Progress, SeedOutput, StopReason,
+    TraceConfig, TraceReport, TraceStats,
 };
 
 /// Where a trace starts.
@@ -118,6 +118,16 @@ pub async fn trace_bitcoin(
     let min_amount = config
         .min_amount
         .unwrap_or_else(|| (seed_amount / 1_000).max(1_000));
+    let seed_list: Vec<SeedOutput> = seed_outputs
+        .iter()
+        .map(|(vout, address, amount)| SeedOutput {
+            txid: seed_tx.txid.clone(),
+            vout: *vout,
+            address: address.clone(),
+            amount: *amount,
+            time: block_time(&seed_tx),
+        })
+        .collect();
 
     match config.direction {
         Direction::Forward => {
@@ -154,6 +164,7 @@ pub async fn trace_bitcoin(
         direction: config.direction,
         seed: seed.describe(),
         seed_amount,
+        seed_outputs: seed_list,
         allocation: "pro_rata".into(),
         min_amount,
         config,

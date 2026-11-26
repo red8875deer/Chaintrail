@@ -5,7 +5,7 @@
 //! Every node and edge refers back to the report, so the UI never shows anything the
 //! report does not contain.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use ct_core::{Claim, Confidence, EntityCategory};
 use serde::{Deserialize, Serialize};
@@ -325,6 +325,46 @@ pub fn build(report: &TraceReport) -> GraphView {
             None => info,
             Some(prev) => merge_leads(prev, info, &report.leads),
         });
+    }
+
+    // A trace of several outputs at once (e.g. a whole transaction): draw the transaction
+    // as the one start point, paying each traced output its exact amount. Otherwise outputs
+    // that are themselves an endpoint or at rest would float unconnected.
+    let seed_addresses: HashSet<&ct_core::Address> = report
+        .seed_outputs
+        .iter()
+        .filter_map(|o| o.address.as_ref())
+        .collect();
+    if forward && seed_addresses.len() > 1 {
+        let txid = &report.seed_outputs[0].txid;
+        let root = format!("tx:{txid}");
+        b.node(&root, NodeKind::Transaction, 0).seed = true;
+        for n in &mut b.nodes {
+            if n.id != root && n.kind == NodeKind::Address {
+                n.seed = false;
+            }
+        }
+        for o in &report.seed_outputs {
+            let Some(address) = &o.address else {
+                continue; // no address: its flows keep their own start point
+            };
+            if o.amount < report.min_amount {
+                continue; // not followed (counted as below the threshold)
+            }
+            let id = address.to_string();
+            b.node(&id, NodeKind::Address, 0).seed = false;
+            b.edge(
+                &root,
+                &id,
+                txid,
+                0,
+                o.time,
+                o.amount,
+                FlowRole::Payment,
+                false,
+                None,
+            );
+        }
     }
 
     for seen in &report.labels_seen {

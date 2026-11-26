@@ -5,7 +5,8 @@ import backward from "../../fixtures/btc_trace_backward.json";
 import large from "../../fixtures/btc_trace_large.json";
 import fanin from "../../fixtures/btc_trace_fanin.json";
 import chain from "../../fixtures/btc_trace_chain.json";
-import { type DisplayOptions, buildDisplay, defaultMinShareBp, displayPath, leadPath, nodeForLead } from "./graph";
+import alloutputs from "../../fixtures/btc_trace_alloutputs.json";
+import { type DisplayOptions, buildDisplay, defaultMinShareBp, displayPath, leadPath, leadSpine, nodeForLead } from "./graph";
 import { leadsCsv } from "./export";
 
 const views: [string, TraceView][] = [
@@ -14,13 +15,15 @@ const views: [string, TraceView][] = [
   ["large fan-out (270 nodes)", large as unknown as TraceView],
   ["Silk Road fan-in (58 nodes)", fanin as unknown as TraceView],
   ["long chain (125 nodes)", chain as unknown as TraceView],
+  ["all outputs of a batch payout", alloutputs as unknown as TraceView],
 ];
 
-const defaults = (v: TraceView, keep = new Set<string>()): DisplayOptions => ({
+const defaults = (v: TraceView, keep = new Set<string>(), keepEdges = new Set<string>()): DisplayOptions => ({
   minShareBp: defaultMinShareBp(v),
   simplify: true,
   expanded: new Set(),
   keep,
+  keepEdges,
 });
 
 const ids = (d: ReturnType<typeof buildDisplay>, group: "nodes" | "edges") =>
@@ -45,24 +48,45 @@ describe.each(views)("display graph: %s", (_, view) => {
     expect(ids(d, "nodes").length).toBeLessThanOrEqual(45);
   });
 
-  it("every lead, when selected, is drawn on its own with its path", () => {
+  it("every lead, when selected, is drawn on its own with its main route", () => {
     view.report.leads.forEach((lead, i) => {
-      const path = leadPath(view, i);
-      const dd = buildDisplay(view, defaults(view, path.nodes));
+      const spine = leadSpine(view, i);
+      const dd = buildDisplay(view, defaults(view, spine.nodes, spine.edges));
       const node = nodeForLead(view, i)!;
       expect(node, `lead ${i} has a node`).toBeDefined();
-      const drawn = dd.nodeOf.get(node.id);
-      expect(drawn, `lead ${i} ${lead.title}`).toBeDefined();
-      const p = displayPath(dd, path);
-      expect(p.nodes.size).toBeGreaterThan(0);
-      if (lead.hops > 0) expect(p.edges.size).toBeGreaterThan(0);
+      // The lead is drawn on its own; every address on its main route is drawn (plain
+      // pass-through runs may stay collapsed)…
+      expect(dd.nodeOf.get(node.id)).toBe(node.id);
+      spine.nodes.forEach((id) => {
+        const shown = dd.nodeOf.get(id);
+        expect(shown, `lead ${i} ${lead.title}: ${id}`).toBeDefined();
+        if (shown !== id) expect(dd.groups.get(shown!)?.kind).toBe("chain");
+      });
+      // …joined by drawn edges, back to the start.
       const drawnEdges = new Set(ids(dd, "edges"));
+      spine.edges.forEach((e) => expect(drawnEdges.has(dd.edgeOf.get(e)!)).toBe(true));
+      if (lead.hops > 0) expect(spine.edges.size).toBeGreaterThan(0);
+      const p = displayPath(dd, leadPath(view, i));
       p.edges.forEach((e) => expect(drawnEdges.has(e)).toBe(true));
     });
   });
 
+  it("revealing a route adds no other small transfers", () => {
+    const i = view.report.leads.length - 1;
+    const spine = leadSpine(view, i);
+    const base = buildDisplay(view, defaults(view));
+    const dd = buildDisplay(view, defaults(view, spine.nodes, spine.edges));
+    const minBp = defaultMinShareBp(view);
+    for (const e of view.graph.edges) {
+      const small = (e.amount * 10000) / view.report.seed_amount < minBp;
+      if (small && !spine.edges.has(e.id)) {
+        expect(dd.edgeOf.has(e.id), `small edge ${e.id}`).toBe(base.edgeOf.has(e.id));
+      }
+    }
+  });
+
   it("showing everything draws every node", () => {
-    const all = buildDisplay(view, { minShareBp: 0, simplify: false, expanded: new Set(), keep: new Set() });
+    const all = buildDisplay(view, { minShareBp: 0, simplify: false, expanded: new Set(), keep: new Set(), keepEdges: new Set() });
     expect(ids(all, "nodes").length).toBe(view.graph.nodes.length);
     expect(all.groups.size).toBe(0);
   });
@@ -72,6 +96,20 @@ describe.each(views)("display graph: %s", (_, view) => {
     const leads = r.leads.reduce((s, l) => s + l.amount, 0);
     expect(leads + r.stats.fees + r.stats.below_threshold).toBe(r.seed_amount);
     expect(leadsCsv(view).trim().split("\r\n")).toHaveLength(r.leads.length + 1);
+  });
+});
+
+describe("all-outputs traces", () => {
+  const view = alloutputs as unknown as TraceView;
+  it("start from the traced transaction, and draw the largest leads by default", () => {
+    const seeds = view.graph.nodes.filter((n) => n.seed);
+    expect(seeds).toHaveLength(1);
+    expect(seeds[0]!.kind).toBe("transaction");
+    const d = buildDisplay(view, defaults(view));
+    for (let i = 0; i < 4; i++) {
+      const n = nodeForLead(view, i)!;
+      expect(d.nodeOf.get(n.id), `lead ${i} ${view.report.leads[i]!.title}`).toBeDefined();
+    }
   });
 });
 

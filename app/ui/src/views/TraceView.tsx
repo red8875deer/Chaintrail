@@ -10,7 +10,7 @@ import { LeadsPanel } from "../components/LeadsPanel";
 import { Legend } from "../components/Legend";
 import { exportCsv, exportJson, exportPng } from "../lib/export";
 import { formatElapsed, formatInt, parseBtc } from "../lib/format";
-import { buildDisplay, defaultMinShareBp, displayPath, isGroupId, leadPath, nodeForLead } from "../lib/graph";
+import { buildDisplay, defaultMinShareBp, displayPath, isGroupId, leadPath, leadSpine, nodeForLead } from "../lib/graph";
 import { type TraceParams, href } from "../lib/route";
 
 function plural(n: number, one: string, many = `${one}s`): string {
@@ -74,6 +74,9 @@ export function TraceView({ params }: { params: TraceParams | null }) {
   const [hideBp, setHideBp] = useState(0);
   const [simplify, setSimplify] = useState(true);
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
+  const [noteClosed, setNoteClosed] = useState(false);
+  /** Nodes to bring into view after the graph changes (e.g. an opened group). */
+  const [viewTarget, setViewTarget] = useState<{ ids: string[] } | null>(null);
   const controls = useRef<GraphControls | null>(null);
   const runId = useRef(0);
 
@@ -115,6 +118,8 @@ export function TraceView({ params }: { params: TraceParams | null }) {
       setView(v);
       setHideBp(defaultMinShareBp(v));
       setExpanded(new Set());
+      setNoteClosed(false);
+      setViewTarget(null);
       // Show the strongest result at once: the largest endpoint, else the largest branch.
       const first = v.report.leads.findIndex((l) => l.kind.kind !== "unexplored");
       setSelectedLead(first >= 0 ? first : v.report.leads.length > 0 ? 0 : null);
@@ -145,11 +150,29 @@ export function TraceView({ params }: { params: TraceParams | null }) {
   };
   const set = <K extends keyof FormState>(k: K, v: FormState[K]) => setForm((f) => ({ ...f, [k]: v }));
 
-  // What is drawn: small flows hidden, small branches grouped, the selected path always kept.
+  // What is drawn: small flows hidden, small branches grouped. The main route to every lead
+  // selected so far is revealed and stays revealed, so selecting leads does not reshuffle
+  // the graph (it only changes when a route that was hidden has to be drawn).
   const reportPath = useMemo(
     () => (view && selectedLead !== null ? leadPath(view, selectedLead) : null),
     [view, selectedLead],
   );
+  const revealedRef = useRef<{ view: View | null; nodes: Set<string>; edges: Set<string> }>({
+    view: null,
+    nodes: new Set(),
+    edges: new Set(),
+  });
+  const revealed = useMemo(() => {
+    let r = revealedRef.current;
+    if (r.view !== view) r = { view, nodes: new Set(), edges: new Set() };
+    if (view && selectedLead !== null) {
+      const s = leadSpine(view, selectedLead);
+      const missing = [...s.nodes].some((n) => !r.nodes.has(n)) || [...s.edges].some((e) => !r.edges.has(e));
+      if (missing) r = { view, nodes: new Set([...r.nodes, ...s.nodes]), edges: new Set([...r.edges, ...s.edges]) };
+    }
+    revealedRef.current = r;
+    return r;
+  }, [view, selectedLead]);
   const display = useMemo(
     () =>
       view
@@ -157,10 +180,11 @@ export function TraceView({ params }: { params: TraceParams | null }) {
             minShareBp: hideBp,
             simplify,
             expanded,
-            keep: reportPath?.nodes ?? new Set<string>(),
+            keep: revealed.nodes,
+            keepEdges: revealed.edges,
           })
         : null,
-    [view, hideBp, simplify, expanded, reportPath],
+    [view, hideBp, simplify, expanded, revealed],
   );
   const path = useMemo(() => (display && reportPath ? displayPath(display, reportPath) : null), [display, reportPath]);
   const focusId = useMemo(() => {
@@ -169,8 +193,10 @@ export function TraceView({ params }: { params: TraceParams | null }) {
     return n ? (display.nodeOf.get(n.id) ?? null) : null;
   }, [view, display, selectedLead]);
   const expand = (id: string) => {
+    const g = display?.groups.get(id);
     setExpanded((cur) => new Set([...cur, id]));
     setSelection(null);
+    if (g) setViewTarget({ ids: g.members });
   };
 
   const selectLead = (i: number) => {
@@ -256,6 +282,7 @@ export function TraceView({ params }: { params: TraceParams | null }) {
                   display={display}
                   path={path}
                   focusId={focusId}
+                  viewTarget={viewTarget}
                   selected={selection}
                   onSelect={(s) => {
                     setSelection(s);
@@ -265,20 +292,23 @@ export function TraceView({ params }: { params: TraceParams | null }) {
                       setSelectedLead((cur) =>
                         n?.lead ? (cur !== null && n.lead.others.includes(cur) ? cur : n.lead.index) : null,
                       );
-                    } else if (s?.type === "node") {
-                      setSelectedLead(null);
                     }
                   }}
                   controls={controls}
                 />
               )}
               <Legend view={view} />
-              {display && (display.hidden > 0 || display.groups.size > 0) && (
-                <p className="view-note" role="status">
-                  Showing {formatInt(display.shown)} of {formatInt(display.total)} addresses.{" "}
-                  {display.hidden > 0 && `${formatInt(display.hidden)} with flows under ${(hideBp / 100).toFixed(hideBp % 100 ? 1 : 0)}% are hidden. `}
-                  {display.groups.size > 0 && "Grouped branches show their count; click one to open it."}
-                </p>
+              {display && !noteClosed && (display.hidden > 0 || display.groups.size > 0) && (
+                <div className="view-note" role="status">
+                  <p>
+                    Showing {formatInt(display.shown)} of {formatInt(display.total)} addresses
+                    {display.hidden > 0 && `; ${formatInt(display.hidden)} with smaller flows are hidden (slider below)`}.
+                    {display.groups.size > 0 && " Groups and runs of addresses open on click."} Every lead is listed on the right.
+                  </p>
+                  <button type="button" className="note-close" aria-label="Close this note" onClick={() => setNoteClosed(true)}>
+                    ×
+                  </button>
+                </div>
               )}
               <div className="canvas-tools" role="toolbar" aria-label="Graph tools">
                 <label title="Hide flows smaller than this share of the traced amount">
@@ -292,8 +322,13 @@ export function TraceView({ params }: { params: TraceParams | null }) {
                 <button type="button" className="btn subtle" onClick={() => controls.current?.fit()}>
                   Fit
                 </button>
-                <button type="button" className="btn subtle" onClick={() => controls.current?.relayout()}>
-                  Re-arrange
+                <button
+                  type="button"
+                  className="btn subtle"
+                  title="Undo any nodes you dragged and lay the graph out again"
+                  onClick={() => controls.current?.relayout()}
+                >
+                  Reset layout
                 </button>
               </div>
             </>

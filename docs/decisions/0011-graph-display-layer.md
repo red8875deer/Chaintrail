@@ -23,17 +23,32 @@ from it by pure, unit-tested functions (`app/ui/src/lib/graph.ts`, `buildDisplay
   addresses into one pill ("N addresses in a row"). Both open on click.
 - **Combine** transfers between the same two drawn nodes into one edge with their total
   ("×N"); its details list every transfer.
-- **Never hide what is being looked at:** every node and edge on the selected lead's path
-  is drawn individually, whatever the settings. The leads list and exports always contain
-  every lead.
-- **Readable by default:** open at a zoom where labels are at least ~9 px; if the graph does
-  not fit, centre on the selected lead. "Fit" still gives an overview (labels too small to
-  read are then left out). Small flows in busy graphs have no permanent label (hover shows it).
+- **Never hide what is being looked at, and do not reshuffle:** selecting a lead reveals
+  its main route (at each step the largest transfer on its path) whatever the settings, and
+  the route stays revealed. Its addresses are never hidden or grouped; plain pass-through
+  runs on it may stay collapsed (highlighted). Tiny side transfers of the same transactions
+  are not added. The graph is laid out again only when the drawn nodes change; edge and
+  label changes are applied in place. The leads list and exports always contain every lead.
+- **Readable by default:** open at a zoom where labels are about 10 px (fonts 13/12 px, zoom
+  ≥ 0.8). If the route does not fit, show as much of it as fits with the lead on screen.
+  "Fit" gives an overview (labels too small to read are then left out). Small flows in busy
+  graphs have no permanent label (hover shows it); amounts on the selected route always show.
+- **No piled-up arrows or amounts:** arrows sit mid-edge (never under a node's label, never
+  stacked where edges meet). Where 3+ edges meet at one node, amounts sit at the other end
+  (by each source of a fan-in, by each target of a fan-out).
+- **All-outputs traces start from the transaction.** The report lists the traced outputs
+  (`seed_outputs`); when they go to several addresses, the graph's start point is the
+  transaction itself, with an exact-amount edge to each followed output, so outputs that are
+  endpoints straight away are connected and shown.
 
 ## Consequences
 - Accuracy is unaffected: hiding and grouping change only what is drawn, the notice says so,
   and amounts on grouped or combined elements are exact totals.
 - Tests assert, on recorded real traces, that every drawn edge connects drawn nodes, that
   every report node is drawn, grouped or counted as hidden, that the default drawing stays
-  under 45 nodes, and that every lead's path is drawn when the lead is selected.
+  under 45 nodes, that every lead's main route is drawn when the lead is selected, that
+  revealing a route adds no other small transfers, and that all-outputs traces have one
+  root and draw their largest leads.
+- The display was reviewed by driving real traces in a browser (Playwright), measuring
+  label overlaps and node movement, and by an independent reviewer pass.
 - Thresholds are named constants in `graph.ts`; change them with this ADR.

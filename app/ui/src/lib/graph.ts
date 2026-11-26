@@ -6,8 +6,10 @@
 //    - flows below a share of the traced amount are hidden (with a notice);
 //    - many small leaf branches of one parent are grouped into one node;
 //    - runs of plain pass-through addresses are collapsed into one node.
-//    Groups and chains expand on click. Nothing on the selected lead's path is ever hidden
-//    or grouped, and the leads panel always lists every lead.
+//    Groups and chains expand on click. The main route to every lead the user selects is
+//    revealed and stays drawn, so the graph does not jump around: its addresses are never
+//    hidden or grouped (plain pass-through runs on it stay collapsed, highlighted). The
+//    leads panel always lists every lead.
 //
 // Meaning is encoded by shape AND colour AND border (never colour alone):
 // what a node is (category), what happened there (lead kind), and how sure we are
@@ -59,6 +61,8 @@ const CHAIN_MIN = 3;
 /** Edges below this share get no permanent label in busy graphs (shown on hover). */
 const LABEL_MIN_BP = 100;
 const BUSY_EDGES = 20;
+/** Edges meeting at one node before their labels move to the unshared end. */
+const FAN = 3;
 
 function basis(view: TraceView, n: GraphNode): "fact" | "inference" | "attribution" | "none" {
   if (!n.lead) return n.entity ? "attribution" : "none";
@@ -110,6 +114,33 @@ export function leadPath(view: TraceView, leadIndex: number): { nodes: Set<strin
   return { nodes, edges };
 }
 
+/** The main route from a lead back to the start: at each step the largest transfer on the
+ * lead's path. This is what must be drawn to show the lead; other routes are drawn if large
+ * enough (tiny side transfers of the same transactions would only add clutter). */
+export function leadSpine(view: TraceView, leadIndex: number): { nodes: Set<string>; edges: Set<string> } {
+  const path = leadPath(view, leadIndex);
+  const nodes = new Set<string>();
+  const edges = new Set<string>();
+  const start = nodeForLead(view, leadIndex);
+  if (!start) return { nodes, edges };
+  const forward = view.report.direction === "forward";
+  let cur = start.id;
+  nodes.add(cur);
+  for (;;) {
+    const back = view.graph.edges.filter(
+      (e) => path.edges.has(e.id) && e.source !== e.target && (forward ? e.target === cur : e.source === cur),
+    );
+    if (back.length === 0) break;
+    const e = back.reduce((a, b) => (b.amount > a.amount ? b : a));
+    const next = forward ? e.source : e.target;
+    edges.add(e.id);
+    if (nodes.has(next)) break;
+    nodes.add(next);
+    cur = next;
+  }
+  return { nodes, edges };
+}
+
 /** The graph node where a lead ends (several leads can end at one address). */
 export function nodeForLead(view: TraceView, leadIndex: number): GraphNode | undefined {
   return view.graph.nodes.find((n) => n.lead && (n.lead.index === leadIndex || n.lead.others.includes(leadIndex)));
@@ -132,8 +163,10 @@ export interface DisplayOptions {
   simplify: boolean;
   /** Group and chain ids the user expanded. */
   expanded: ReadonlySet<string>;
-  /** Report node ids that must stay visible and ungrouped (the selected lead's path). */
+  /** Report node ids that must stay visible and ungrouped (revealed lead routes). */
   keep: ReadonlySet<string>;
+  /** Report edge ids drawn whatever their size (revealed lead routes). */
+  keepEdges: ReadonlySet<string>;
 }
 
 export interface DisplayGroup {
@@ -143,6 +176,9 @@ export interface DisplayGroup {
   members: string[];
   /** Traced amount entering the group. */
   amount: number;
+  /** Chains: traced amount leaving the last address (the rest left in hidden branches or
+   * went to fees). Groups: same as `amount`. */
+  amountOut: number;
   styleKey: NodeStyleKey;
 }
 
@@ -172,9 +208,7 @@ export function buildDisplay(view: TraceView, o: DisplayOptions): Display {
   const share = (amount: number) => Number(shareBasisPoints(amount, seedAmount));
 
   // 1. Hide small flows, then keep what is still connected to the seed.
-  const kept = view.graph.edges.filter(
-    (e) => share(e.amount) >= o.minShareBp || (o.keep.has(e.source) && o.keep.has(e.target)),
-  );
+  const kept = view.graph.edges.filter((e) => share(e.amount) >= o.minShareBp || o.keepEdges.has(e.id));
   const visible = new Set<string>();
   // Start points too: a trace of every output of a large batch has many small ones. Keep
   // those with a large enough flow or amount, and always at least the largest.
@@ -233,6 +267,7 @@ export function buildDisplay(view: TraceView, o: DisplayOptions): Display {
           kind: "group",
           members: members.map(away),
           amount: members.reduce((s, e) => s + e.amount, 0),
+          amountOut: members.reduce((s, e) => s + e.amount, 0),
           styleKey: key,
         });
         members.forEach((e) => nodeOf.set(away(e), id));
@@ -273,6 +308,7 @@ export function buildDisplay(view: TraceView, o: DisplayOptions): Display {
         kind: "chain",
         members: run,
         amount: parents.get(run[0]!)![0]!.amount,
+        amountOut: children.get(run[run.length - 1]!)![0]!.amount,
         styleKey: "address",
       });
       run.forEach((m) => nodeOf.set(m, cid));
@@ -288,13 +324,16 @@ export function buildDisplay(view: TraceView, o: DisplayOptions): Display {
     const n = byId.get(id)!;
     const styleKey = nodeStyleKey(n);
     const b = basis(view, n);
+    // The traced transaction (all-outputs traces) stands for the whole traced amount,
+    // including outputs too small to follow.
+    const amount = n.seed && n.kind === "transaction" ? seedAmount : nodeAmount(n);
     shown++;
     elements.push({
       group: "nodes",
       data: {
         id,
-        label: `${n.label}\n${formatBtcShort(nodeAmount(n))} BTC`,
-        size: nodeSize(nodeAmount(n), seedAmount),
+        label: `${n.label}\n${formatBtcShort(amount)} BTC`,
+        size: nodeSize(amount, seedAmount),
         isLead: n.lead ? 1 : 0,
       },
       classes: [styleKey, n.lead ? "lead" : "", b].filter(Boolean).join(" "),
@@ -334,6 +373,15 @@ export function buildDisplay(view: TraceView, o: DisplayOptions): Display {
     m.members.push(e);
   }
   const busy = merged.size > BUSY_EDGES;
+  // Where several edges meet at one node, their amounts would pile up there: put the label
+  // at the other, unshared end (by each source for a fan-in, by each target for a fan-out).
+  const inDeg = new Map<string, number>();
+  const outDeg = new Map<string, number>();
+  for (const m of merged.values()) {
+    if (m.source === m.target) continue;
+    inDeg.set(m.target, (inDeg.get(m.target) ?? 0) + 1);
+    outDeg.set(m.source, (outDeg.get(m.source) ?? 0) + 1);
+  }
   for (const [key, m] of merged) {
     const first = m.members[0]!;
     const single = m.members.length === 1 && !isGroupId(m.source) && !isGroupId(m.target);
@@ -342,6 +390,11 @@ export function buildDisplay(view: TraceView, o: DisplayOptions): Display {
     const bp = share(m.amount);
     const roles = new Set(m.members.map((e) => e.role.role));
     const peel = m.members.every((e) => e.peel);
+    const loop = m.source === m.target;
+    const minor = busy && bp < LABEL_MIN_BP;
+    const fanIn = (inDeg.get(m.target) ?? 0) >= FAN && (outDeg.get(m.source) ?? 0) === 1;
+    const fanOut = (outDeg.get(m.source) ?? 0) >= FAN && (inDeg.get(m.target) ?? 0) === 1;
+    const width = loop ? Math.min(edgeWidth(m.amount, seedAmount), 3) : edgeWidth(m.amount, seedAmount);
     elements.push({
       group: "edges",
       data: {
@@ -349,7 +402,9 @@ export function buildDisplay(view: TraceView, o: DisplayOptions): Display {
         source: m.source,
         target: m.target,
         label: formatBtcShort(m.amount) + (peel ? " (peel)" : "") + (m.members.length > 1 ? ` ×${m.members.length}` : ""),
-        width: edgeWidth(m.amount, seedAmount),
+        width,
+        // Keep the amount clear of the line and its arrow, however thick the line is.
+        labelDy: -Math.round(6 + 1.6 * width),
         weight: 1 + Math.round(bp / 100),
         amount: m.amount,
         count: m.members.length,
@@ -357,8 +412,10 @@ export function buildDisplay(view: TraceView, o: DisplayOptions): Display {
       classes: [
         roles.size === 1 ? first.role.role : "payment",
         peel ? "peel" : "",
-        m.source === m.target ? "loop" : "",
-        busy && bp < LABEL_MIN_BP ? "minor" : "",
+        loop ? "loop" : "",
+        minor ? "minor" : "",
+        !minor && !loop && fanIn ? "lbl-src" : "",
+        !minor && !loop && fanOut ? "lbl-tgt" : "",
       ]
         .filter(Boolean)
         .join(" "),
@@ -403,7 +460,7 @@ export function displayPath(d: Display, path: { nodes: Set<string>; edges: Set<s
 export function defaultMinShareBp(view: TraceView): number {
   if (view.graph.nodes.length <= LARGE_GRAPH_NODES) return 0;
   const drawn = (bp: number) =>
-    buildDisplay(view, { minShareBp: bp, simplify: true, expanded: new Set(), keep: new Set() }).elements.filter(
+    buildDisplay(view, { minShareBp: bp, simplify: true, expanded: new Set(), keep: new Set(), keepEdges: new Set() }).elements.filter(
       (e) => e.group === "nodes",
     ).length;
   return DEFAULT_MIN_BP_STEPS.find((bp) => drawn(bp) <= READABLE_NODES) ?? DEFAULT_MIN_BP_STEPS.at(-1)!;
@@ -424,11 +481,12 @@ export function graphStyle(p: Palette): StylesheetJsonBlock[] {
         height: "data(size)",
         label: "data(label)",
         "font-family": "Atkinson Hyperlegible Next, system-ui, sans-serif",
-        "font-size": 12,
+        "font-size": 13,
         "min-zoomed-font-size": 7,
         color: p.ink,
         "text-wrap": "wrap",
-        "text-max-width": "140px",
+        // Narrow labels: wide ones reach under neighbouring edges.
+        "text-max-width": "112px",
         "text-valign": "bottom",
         "text-margin-y": 6,
         "text-background-color": p.surface,
@@ -470,19 +528,28 @@ export function graphStyle(p: Palette): StylesheetJsonBlock[] {
       style: {
         width: "data(width)",
         "line-color": p.trail,
-        "target-arrow-color": p.trail,
-        "target-arrow-shape": "triangle",
-        "arrow-scale": 0.8,
+        // Arrows mid-edge: they never hide under a node's label or pile up where many
+        // edges meet, and the flow direction (left to right) stays clear.
+        "target-arrow-shape": "none",
+        "mid-target-arrow-shape": "triangle",
+        "mid-target-arrow-color": p.trail,
+        "arrow-scale": 0.9,
         "curve-style": "bezier",
         "control-point-step-size": 36,
         opacity: 0.8,
         label: "data(label)",
         "font-family": "Atkinson Hyperlegible Mono, ui-monospace, monospace",
-        "font-size": 11,
+        "font-size": 12,
         "min-zoomed-font-size": 7,
         color: p.ink,
         "text-rotation": "autorotate",
-        "text-margin-y": -9,
+        "text-margin-y": "data(labelDy)" as never,
+        "source-text-rotation": "autorotate",
+        "source-text-offset": 84,
+        "source-text-margin-y": "data(labelDy)" as never,
+        "target-text-rotation": "autorotate",
+        "target-text-offset": 84,
+        "target-text-margin-y": "data(labelDy)" as never,
         "text-background-color": p.surface,
         "text-background-opacity": 0.92,
         "text-background-padding": "2px",
@@ -491,15 +558,20 @@ export function graphStyle(p: Palette): StylesheetJsonBlock[] {
         "transition-duration": 150,
       },
     },
+    // Fan-in: amount by each source. Fan-out: amount by each target.
+    { selector: "edge.lbl-src", style: { label: "", "source-label": "data(label)" } },
+    { selector: "edge.lbl-tgt", style: { label: "", "target-label": "data(label)" } },
     { selector: "edge.change", style: { "line-style": "dashed", "line-dash-pattern": [7, 4] } },
     // Self-transfers loop over the top: arrows arrive from the left, labels sit below.
-    { selector: "edge.loop", style: { label: "", "loop-direction": "0deg", "loop-sweep": "-50deg" } },
+    { selector: "edge.loop", style: { label: "", "loop-direction": "0deg", "loop-sweep": "-50deg", "text-margin-y": -14 } },
+    { selector: "edge.loop.hover, edge.loop:selected", style: { label: "data(label)" } },
     { selector: "edge.minor", style: { label: "" } },
-    { selector: "edge.minor.hover, edge.minor:selected", style: { label: "data(label)" } },
-    { selector: ".dim", style: { opacity: 0.12 } },
+    // Amounts on the selected lead's route are always shown.
+    { selector: "edge.minor.hover, edge.minor.path, edge.minor:selected", style: { label: "data(label)" } },
+    { selector: ".dim", style: { opacity: 0.22 } },
     {
       selector: "edge.path",
-      style: { "line-color": p.amber, "target-arrow-color": p.amber, opacity: 1, "z-index": 10 },
+      style: { "line-color": p.amber, "mid-target-arrow-color": p.amber, opacity: 1, "z-index": 10 },
     },
     { selector: "node.path", style: { "border-color": p.amber, "border-width": 4, opacity: 1, "z-index": 10 } },
     { selector: "edge.hover", style: { opacity: 1, "z-index": 20 } },

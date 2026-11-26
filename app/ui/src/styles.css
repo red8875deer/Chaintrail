@@ -1028,8 +1028,11 @@ table.ledger a:hover,
   position: absolute;
   left: 12px;
   top: 12px;
-  max-width: 520px;
-  padding: 8px 12px;
+  max-width: min(520px, calc(100% - 24px));
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 6px 6px 6px 12px;
   background: var(--surface);
   border: 1px solid var(--rule);
   border-left: 3px solid var(--trail);
@@ -1041,4 +1044,25 @@ table.ledger a:hover,
 
 .canvas-tools label input[type="checkbox"] {
   margin: 0;
+}
+
+.view-note p {
+  margin: 0;
+  padding-top: 2px;
+}
+.note-close {
+  flex: none;
+  border: 0;
+  background: none;
+  color: var(--muted);
+  font-size: 1.1rem;
+  line-height: 1;
+  padding: 2px 6px;
+  border-radius: var(--radius-s);
+  cursor: pointer;
+}
+.note-close:hover,
+.note-close:focus-visible {
+  color: var(--ink);
+  background: var(--paper);
 }
