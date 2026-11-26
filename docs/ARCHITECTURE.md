@@ -48,8 +48,8 @@ tested before they get a UI.
 | `ct-cli` | `check`, `btc address`, `btc tx`, `btc trace` | Command-line front end. |
 | `ct-store` | done (Bitcoin) | SQLite cache + cases. Confirmed blocks never change, so cached txs are reused forever. |
 | `ct-heuristics` | Bitcoin done | Pure functions over `ct-core` types. Each heuristic returns a scored inference with evidence. |
-| `ct-labels` | planned | Loads `data/labels`, matches addresses to entities. |
-| `ct-trace` | Bitcoin done | The tracing engine (see [TRACING.md](TRACING.md)). |
+| `ct-trace` | Bitcoin done |
+| `ct-labels` | done: pack format, OFAC importer, built-in packs from `data/labels` | The tracing engine (see [TRACING.md](TRACING.md)). |
 | `app/` | planned | Tauri 2 desktop app (Windows, macOS, Linux; mobile later from the same code). |
 
 ## Data model

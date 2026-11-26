@@ -13,6 +13,6 @@ pub mod testing;
 pub use btc::{Seed, trace_bitcoin};
 pub use labels::{LabelLookup, MemoryLabels, NoLabels};
 pub use report::{
-    Direction, Flow, FlowRole, Lead, LeadKind, Progress, StopReason, TraceConfig, TraceReport,
-    TraceStats,
+    Direction, Flow, FlowRole, LabelSeen, Lead, LeadKind, Progress, StopReason, TraceConfig,
+    TraceReport, TraceStats,
 };

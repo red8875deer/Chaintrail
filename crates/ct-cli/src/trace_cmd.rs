@@ -7,7 +7,7 @@ use anyhow::Result;
 use ct_core::time::format_utc;
 use ct_core::{Address, Chain, Claim};
 use ct_providers::BitcoinProvider;
-use ct_trace::{Direction, FlowRole, Lead, LeadKind, NoLabels, Seed, TraceConfig, TraceReport};
+use ct_trace::{Direction, FlowRole, Lead, LeadKind, Seed, TraceConfig, TraceReport};
 
 use crate::lookup::btc;
 
@@ -22,7 +22,12 @@ pub struct TraceArgs {
     pub no_address_checks: bool,
 }
 
-pub async fn btc_trace(p: &dyn BitcoinProvider, args: TraceArgs, json: bool) -> Result<String> {
+pub async fn btc_trace(
+    p: &dyn BitcoinProvider,
+    labels: &dyn ct_core::LabelLookup,
+    args: TraceArgs,
+    json: bool,
+) -> Result<String> {
     let seed = match (args.vout, &args.to) {
         (Some(vout), None) => Seed::Output {
             txid: args.txid.clone(),
@@ -63,7 +68,7 @@ pub async fn btc_trace(p: &dyn BitcoinProvider, args: TraceArgs, json: bool) -> 
             let _ = e.flush();
         }
     };
-    let report = ct_trace::trace_bitcoin(p, &NoLabels, seed, config, &mut progress).await?;
+    let report = ct_trace::trace_bitcoin(p, labels, seed, config, &mut progress).await?;
     if show_progress {
         eprintln!();
     }
@@ -111,10 +116,14 @@ fn render_lead(out: &mut String, n: usize, l: &Lead, seed_amount: u64) -> Result
     if let Some(t) = &l.txid {
         writeln!(out, "      tx      {t}")?;
     }
-    if let Claim::Inference { evidence, .. } = &l.claim {
-        for e in evidence {
-            writeln!(out, "      why     {e}")?;
+    match &l.claim {
+        Claim::Inference { evidence, .. } => {
+            for e in evidence {
+                writeln!(out, "      why     {e}")?;
+            }
         }
+        Claim::Attribution { url: Some(u), .. } => writeln!(out, "      source  {u}")?,
+        _ => {}
     }
     Ok(())
 }
@@ -211,6 +220,24 @@ fn render(r: &TraceReport, source: &str) -> Result<String> {
             out,
             "  Raise --max-hops / --max-txs, or trace a branch on its own to go further."
         )?;
+    }
+
+    if !r.labels_seen.is_empty() {
+        writeln!(out)?;
+        writeln!(
+            out,
+            "LABELLED ADDRESSES PASSED THROUGH (not treated as endpoints)"
+        )?;
+        for l in &r.labels_seen {
+            writeln!(
+                out,
+                "  {}  {} ({}, {} confidence)",
+                l.address,
+                l.entity,
+                l.category.as_str(),
+                l.claim.confidence()
+            )?;
+        }
     }
 
     writeln!(out)?;

@@ -2,6 +2,7 @@
 //!
 //! Every feature lands here first, so it can be tested before the desktop UI exists.
 
+mod labels_cmd;
 mod lookup;
 mod trace_cmd;
 
@@ -29,6 +30,10 @@ struct Cli {
     #[arg(long, global = true, value_name = "PATH")]
     cache: Option<std::path::PathBuf>,
 
+    /// Extra folder of label packs (*.toml) to load after the built-in and user labels.
+    #[arg(long, global = true, value_name = "DIR")]
+    labels: Option<std::path::PathBuf>,
+
     #[command(subcommand)]
     command: Command,
 }
@@ -40,6 +45,46 @@ enum Command {
     /// Bitcoin lookups and tracing.
     #[command(subcommand)]
     Btc(BtcCommand),
+    /// Address labels: who owns an address, according to whom.
+    #[command(subcommand)]
+    Labels(LabelsCommand),
+}
+
+#[derive(Subcommand)]
+enum LabelsCommand {
+    /// Show every label for an address.
+    Lookup { address: String },
+    /// List loaded label packs with their sources and licences.
+    Packs,
+    /// Add your own label (stored in your user data folder, labels/user.toml).
+    Add {
+        address: String,
+        /// Who owns it, e.g. "Example Exchange".
+        #[arg(long)]
+        entity: String,
+        /// exchange, mixer, bridge, dex, defi, swap_service, payment_processor,
+        /// wallet_service, mining_pool, gambling, darknet, scam, ransomware, hack,
+        /// sanctioned, individual, unknown_service
+        #[arg(long)]
+        category: String,
+        /// low, medium or high.
+        #[arg(long, default_value = "medium")]
+        confidence: String,
+        #[arg(long)]
+        note: Option<String>,
+        /// Where this can be checked (URL or reference).
+        #[arg(long)]
+        source: Option<String>,
+    },
+    /// Download the latest OFAC sanctions list (or read --file) and update the labels.
+    UpdateOfac {
+        /// Use a local SDN.XML instead of downloading.
+        #[arg(long)]
+        file: Option<std::path::PathBuf>,
+        /// Where to write the pack (default: your user labels folder).
+        #[arg(long)]
+        out: Option<std::path::PathBuf>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -86,14 +131,45 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
     let output = match cli.command {
         Command::Check { address } => lookup::check(&address, cli.json)?,
+        Command::Labels(cmd) => match cmd {
+            LabelsCommand::Lookup { address } => {
+                let index = labels_cmd::load_index(cli.labels.as_deref())?;
+                labels_cmd::lookup(&index, &address, cli.json)?
+            }
+            LabelsCommand::Packs => {
+                labels_cmd::packs(&labels_cmd::load_index(cli.labels.as_deref())?)?
+            }
+            LabelsCommand::Add {
+                address,
+                entity,
+                category,
+                confidence,
+                note,
+                source,
+            } => labels_cmd::add(labels_cmd::AddArgs {
+                address,
+                entity,
+                category,
+                confidence,
+                note,
+                source,
+            })?,
+            LabelsCommand::UpdateOfac { file, out } => {
+                labels_cmd::update_ofac(file.as_deref(), out.as_deref()).await?
+            }
+        },
         Command::Btc(cmd) => {
             let provider = bitcoin_provider(cli.no_cache, cli.cache.as_deref())?;
             let provider: &dyn ct_providers::BitcoinProvider = provider.as_ref();
             match cmd {
                 BtcCommand::Address { address, pages } => {
-                    lookup::btc_address(provider, &address, pages, cli.json).await?
+                    let labels = labels_cmd::load_index(cli.labels.as_deref())?;
+                    lookup::btc_address(provider, &labels, &address, pages, cli.json).await?
                 }
-                BtcCommand::Tx { txid } => lookup::btc_tx(provider, &txid, cli.json).await?,
+                BtcCommand::Tx { txid } => {
+                    let labels = labels_cmd::load_index(cli.labels.as_deref())?;
+                    lookup::btc_tx(provider, &labels, &txid, cli.json).await?
+                }
                 BtcCommand::Trace {
                     txid,
                     vout,
@@ -114,7 +190,8 @@ async fn main() -> Result<()> {
                         min_btc,
                         no_address_checks,
                     };
-                    trace_cmd::btc_trace(provider, args, cli.json).await?
+                    let labels = labels_cmd::load_index(cli.labels.as_deref())?;
+                    trace_cmd::btc_trace(provider, &labels, args, cli.json).await?
                 }
             }
         }

@@ -60,10 +60,14 @@ pub enum Claim {
     },
     /// Stated by a label source.
     Attribution {
+        /// Label pack id, e.g. `ofac-sdn`.
         source: String,
         confidence: Confidence,
         /// When the source made or last confirmed the statement (ISO date), if known.
         as_of: Option<String>,
+        /// Where the statement can be checked.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        url: Option<String>,
     },
 }
 

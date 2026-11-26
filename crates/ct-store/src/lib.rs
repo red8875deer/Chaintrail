@@ -11,4 +11,4 @@ mod store;
 
 pub use cached::{CachePolicy, CacheStats, CachedBitcoin};
 pub use error::StoreError;
-pub use store::Store;
+pub use store::{Store, app_data_dir};

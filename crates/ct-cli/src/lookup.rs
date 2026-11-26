@@ -4,7 +4,7 @@ use std::fmt::Write as _;
 
 use anyhow::{Context, Result, bail};
 use ct_core::time::format_utc;
-use ct_core::{Address, Amount, Chain, ScriptType, UtxoTx};
+use ct_core::{Address, Amount, Chain, LabelLookup, ScriptType, UtxoTx};
 use ct_heuristics::btc::{TxShape, classify, detect_change, is_peel_step};
 use ct_providers::BitcoinProvider;
 
@@ -39,6 +39,7 @@ pub fn check(input: &str, json: bool) -> Result<String> {
 
 pub async fn btc_address(
     p: &dyn BitcoinProvider,
+    labels: &dyn LabelLookup,
     input: &str,
     pages: u32,
     json: bool,
@@ -64,6 +65,9 @@ pub async fn btc_address(
     }
 
     writeln!(out, "Address   {address}")?;
+    if let Some(l) = labels.lookup(&address) {
+        writeln!(out, "Label     {}", describe_label(&l))?;
+    }
     writeln!(out, "Source    {}", p.name())?;
     writeln!(out, "Txs       {}", summary.tx_count)?;
     writeln!(out, "Received  {}", btc(summary.received as u64))?;
@@ -114,7 +118,12 @@ pub async fn btc_address(
     Ok(out)
 }
 
-pub async fn btc_tx(p: &dyn BitcoinProvider, txid: &str, json: bool) -> Result<String> {
+pub async fn btc_tx(
+    p: &dyn BitcoinProvider,
+    labels: &dyn LabelLookup,
+    txid: &str,
+    json: bool,
+) -> Result<String> {
     let tx = p.tx(txid).await?;
     let spends = p
         .outspends(&tx.txid)
@@ -185,7 +194,12 @@ pub async fn btc_tx(p: &dyn BitcoinProvider, txid: &str, json: bool) -> Result<S
             .as_ref()
             .map(ToString::to_string)
             .unwrap_or_else(|| script_label(i.script_type.as_ref()));
-        writeln!(out, "  {:>18}  {who}", btc(i.value))?;
+        writeln!(
+            out,
+            "  {:>18}  {who}{}",
+            btc(i.value),
+            label_suffix(labels, i.address.as_ref())
+        )?;
     }
     writeln!(out)?;
     writeln!(
@@ -212,8 +226,34 @@ pub async fn btc_tx(p: &dyn BitcoinProvider, txid: &str, json: bool) -> Result<S
         } else {
             "UNSPENT (funds at rest)".to_string()
         };
-        writeln!(out, "  #{:<3} {:>18}  {who}", o.index, btc(o.value))?;
+        writeln!(
+            out,
+            "  #{:<3} {:>18}  {who}{}",
+            o.index,
+            btc(o.value),
+            label_suffix(labels, o.address.as_ref())
+        )?;
         writeln!(out, "        → {next}")?;
     }
     Ok(out)
+}
+
+fn describe_label(l: &ct_core::Label) -> String {
+    let source = match &l.claim {
+        ct_core::Claim::Attribution { source, .. } => source.as_str(),
+        _ => "inferred",
+    };
+    format!(
+        "{} ({}, {} confidence, from {source})",
+        l.entity,
+        l.category.as_str(),
+        l.claim.confidence()
+    )
+}
+
+fn label_suffix(labels: &dyn LabelLookup, address: Option<&Address>) -> String {
+    address
+        .and_then(|a| labels.lookup(a))
+        .map(|l| format!("  [{}]", describe_label(&l)))
+        .unwrap_or_default()
 }

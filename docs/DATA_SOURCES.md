@@ -29,6 +29,11 @@ conservative per-host limits and backs off on HTTP 429.
 
 ## Attribution (labels)
 
+Implemented in Phase 2. Every imported pack, its original source, and every pack that was
+**not** imported (with the reason) is listed in [`data/labels/SOURCES.md`](../data/labels/SOURCES.md).
+Confidence mapping for GraphSense data: authority / service-owned / ledger data → high,
+research ("forensic") → medium, web crawl or untrusted → low.
+
 | Source | Licence / terms | Use |
 |---|---|---|
 | OFAC SDN list (sanctionslistservice.ofac.treas.gov) | US government work, public domain | Sanctioned addresses |

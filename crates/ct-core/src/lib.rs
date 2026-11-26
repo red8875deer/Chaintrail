@@ -18,6 +18,6 @@ pub use amount::Amount;
 pub use asset::Asset;
 pub use chain::Chain;
 pub use claim::{Claim, Confidence};
-pub use entity::{EntityCategory, Label};
+pub use entity::{EntityCategory, Label, LabelLookup};
 pub use transfer::{Transfer, TransferKind};
 pub use utxo::{AddressSummary, BlockRef, OutputSpend, ScriptType, TxInput, TxOutput, UtxoTx};

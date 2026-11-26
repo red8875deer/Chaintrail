@@ -24,6 +24,7 @@ pub enum EntityCategory {
     Scam,
     Ransomware,
     Hack,
+    TerroristFinancing,
     Sanctioned,
     Individual,
     /// Behaves like a service but we do not know which one.
@@ -31,6 +32,30 @@ pub enum EntityCategory {
 }
 
 impl EntityCategory {
+    /// Human-readable name, e.g. "swap service".
+    pub fn as_str(self) -> &'static str {
+        match self {
+            EntityCategory::Exchange => "exchange",
+            EntityCategory::Mixer => "mixer",
+            EntityCategory::Bridge => "bridge",
+            EntityCategory::Dex => "DEX",
+            EntityCategory::Defi => "DeFi protocol",
+            EntityCategory::SwapService => "swap service",
+            EntityCategory::PaymentProcessor => "payment processor",
+            EntityCategory::WalletService => "wallet service",
+            EntityCategory::MiningPool => "mining pool",
+            EntityCategory::Gambling => "gambling",
+            EntityCategory::Darknet => "darknet market",
+            EntityCategory::Scam => "scam",
+            EntityCategory::Ransomware => "ransomware",
+            EntityCategory::Hack => "hack / theft",
+            EntityCategory::TerroristFinancing => "terrorist financing",
+            EntityCategory::Sanctioned => "sanctioned",
+            EntityCategory::Individual => "individual",
+            EntityCategory::UnknownService => "unidentified service",
+        }
+    }
+
     /// Whether funds reaching this category are a lead (and tracing stops there by default).
     /// Custodial services and protocols are where an investigator acts next: request records,
     /// ask for a freeze, or continue on another chain.
@@ -56,4 +81,11 @@ pub struct Label {
     pub claim: Claim,
     /// Free-text note, e.g. "hot wallet 3".
     pub note: Option<String>,
+}
+
+/// Something that can say who an address belongs to. Implemented by the label index
+/// (`ct-labels`) and by test doubles.
+pub trait LabelLookup: Send + Sync {
+    /// The single best label for `address`, if any.
+    fn lookup(&self, address: &Address) -> Option<Label>;
 }

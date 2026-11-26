@@ -27,13 +27,17 @@ Dates are not committed; quality is.
 - [ ] Let the user "continue through" a detected service or CoinJoin from a lead
 
 ## Phase 2: Labels
+- [x] Label pack format (TOML) with source, publisher, licence, date and confidence; packs validated in tests
+- [x] OFAC SDN importer (`labels update-ofac`), built-in snapshot of 1,027 addresses
+- [x] Exchange-published wallet lists: Bitfinex, OKX, Huobi, Binance, KuCoin, Bybit, Deribit, Crypto.com, Checksig (via GraphSense)
+- [x] Mixers (ChipMixer, Blender, Sinbad, Wasabi fees, Tornado Cash), darknet markets, ransomware, hacks, scams, mining pools, DeFi contracts
+- [x] GraphSense TagPacks import, reviewed pack by pack (`tools/import_graphsense.py`, `data/labels/SOURCES.md`)
+- [x] User labels (`labels add`) stored locally; same-id packs replace built-in ones
+- [x] Traces name detected services through labels on addresses of the same wallet
 - [ ] Golden cases: publicly documented traces reproduced as regression tests
-- [ ] Label file format with source, date, confidence, licence per entry
-- [ ] OFAC SDN importer
-- [ ] Exchange proof-of-reserves addresses (major exchanges)
-- [ ] Known mixer / bridge / DEX contracts
-- [ ] GraphSense TagPacks import, licence-checked pack by pack
-- [ ] User labels stored locally
+- [ ] Bridge deposit addresses (needed with Ethereum support, Phase 4)
+- [ ] Fresh exchange proof-of-reserves lists directly from the exchanges (current lists date from 2022)
+- [ ] Large packs as optional downloads (BitMEX 336k addresses, sextortion IOCs after licence review)
 
 ## Phase 3: Desktop app
 - [ ] Tauri 2 shell, React + TypeScript UI

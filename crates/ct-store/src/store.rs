@@ -95,7 +95,7 @@ impl Store {
     /// `~/.local/share/chaintrail/cache.sqlite` on Linux. `None` if the platform directory
     /// cannot be determined.
     pub fn default_path() -> Option<PathBuf> {
-        Some(data_local_dir()?.join("chaintrail").join("cache.sqlite"))
+        Some(app_data_dir()?.join("cache.sqlite"))
     }
 
     fn init(mut conn: Connection) -> Result<Store, StoreError> {
@@ -289,6 +289,11 @@ fn migrate(conn: &mut Connection) -> Result<(), StoreError> {
 // The platform's local application-data directory, at the same locations as
 // `dirs::data_local_dir()`. Written out here because `dirs` pulls in an MPL-2.0 crate
 // (`option-ext`), and dependencies must be MIT/Apache/BSD-style.
+
+/// ChainTrail's folder in the platform's local data directory (cache, user labels).
+pub fn app_data_dir() -> Option<PathBuf> {
+    Some(data_local_dir()?.join("chaintrail"))
+}
 
 #[cfg(windows)]
 fn data_local_dir() -> Option<PathBuf> {

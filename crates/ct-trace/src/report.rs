@@ -114,6 +114,16 @@ pub struct Flow {
     pub note: Option<String>,
 }
 
+/// A labelled address the funds passed through without the trace stopping there (label
+/// below the stop confidence, or a category that is not an endpoint).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LabelSeen {
+    pub address: Address,
+    pub entity: String,
+    pub category: EntityCategory,
+    pub claim: Claim,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct TraceStats {
     pub txs_examined: u32,
@@ -138,6 +148,8 @@ pub struct TraceReport {
     /// Sorted by amount, largest first.
     pub leads: Vec<Lead>,
     pub flows: Vec<Flow>,
+    /// Labelled addresses passed through (not endpoints).
+    pub labels_seen: Vec<LabelSeen>,
     pub stats: TraceStats,
 }
 

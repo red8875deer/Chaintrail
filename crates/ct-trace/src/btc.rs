@@ -7,15 +7,17 @@
 
 use std::collections::HashMap;
 
-use ct_core::{Address, AddressSummary, Chain, Claim, EntityCategory, OutputSpend, UtxoTx};
+use ct_core::{
+    Address, AddressSummary, Chain, Claim, Confidence, EntityCategory, Label, OutputSpend, UtxoTx,
+};
 use ct_heuristics::btc::{TxShape, classify, detect_change, is_peel_step, service_from_summary};
 use ct_providers::{BitcoinProvider, ProviderError};
 use serde::{Deserialize, Serialize};
 
 use crate::labels::LabelLookup;
 use crate::report::{
-    Direction, Flow, FlowRole, Lead, LeadKind, Progress, StopReason, TraceConfig, TraceReport,
-    TraceStats,
+    Direction, Flow, FlowRole, LabelSeen, Lead, LeadKind, Progress, StopReason, TraceConfig,
+    TraceReport, TraceStats,
 };
 
 /// Where a trace starts.
@@ -65,6 +67,7 @@ pub async fn trace_bitcoin(
         leads: Vec::new(),
         lead_index: HashMap::new(),
         flows: Vec::new(),
+        labels_seen: Vec::new(),
         stats: TraceStats::default(),
     };
     let seed_tx = t.tx(seed.txid()).await?;
@@ -152,6 +155,7 @@ pub async fn trace_bitcoin(
         config,
         leads,
         flows: t.flows,
+        labels_seen: t.labels_seen,
         stats: t.stats,
     })
 }
@@ -189,7 +193,40 @@ struct Tracer<'a> {
     leads: Vec<Lead>,
     lead_index: HashMap<String, usize>,
     flows: Vec<Flow>,
+    labels_seen: Vec<LabelSeen>,
     stats: TraceStats,
+}
+
+/// A service named through labels on addresses of the same wallet.
+struct NamedService {
+    label: Label,
+    confidence: Confidence,
+    evidence: Vec<String>,
+}
+
+fn label_title(label: &Label) -> String {
+    if label.entity.is_empty() {
+        label.category.as_str().to_string()
+    } else {
+        format!("{} ({})", label.entity, label.category.as_str())
+    }
+}
+
+fn label_evidence(label: &Label) -> String {
+    match &label.claim {
+        Claim::Attribution {
+            source, url, as_of, ..
+        } => format!(
+            "labelled {} by {source}{}{}",
+            label.entity,
+            as_of
+                .as_deref()
+                .map(|d| format!(" (as of {d})"))
+                .unwrap_or_default(),
+            url.as_deref().map(|u| format!(": {u}")).unwrap_or_default()
+        ),
+        _ => format!("labelled {}", label.entity),
+    }
 }
 
 fn block_time(tx: &UtxoTx) -> Option<u64> {
@@ -237,12 +274,10 @@ impl<'a> Tracer<'a> {
     /// Endpoint check for an address: labels first, then behaviour.
     async fn endpoint_for(&mut self, address: &Address) -> Option<(String, EntityCategory, Claim)> {
         if let Some(label) = self.labels.lookup(address) {
-            let title = if label.entity.is_empty() {
-                format!("{:?}", label.category)
-            } else {
-                label.entity.clone()
-            };
-            return Some((title, label.category, label.claim));
+            if self.stops_at(&label) {
+                return Some((label_title(&label), label.category, label.claim));
+            }
+            self.saw_label(label);
         }
         if !self.config.check_addresses {
             return None;
@@ -271,6 +306,81 @@ impl<'a> Tracer<'a> {
                 evidence: hint.evidence,
             },
         ))
+    }
+
+    /// Whether a label is strong enough, and of an endpoint category, to stop the trace.
+    fn stops_at(&self, label: &Label) -> bool {
+        label.category.is_endpoint() && label.claim.confidence() >= self.config.stop_confidence
+    }
+
+    fn saw_label(&mut self, label: Label) {
+        if !self.labels_seen.iter().any(|l| l.address == label.address) {
+            self.labels_seen.push(LabelSeen {
+                address: label.address,
+                entity: label.entity,
+                category: label.category,
+                claim: label.claim,
+            });
+        }
+    }
+
+    /// Name the wallet behind a service-shaped transaction from labels on its inputs (all
+    /// inputs of a non-CoinJoin transaction belong to one wallet) or, for consolidations,
+    /// on the address that received the swept funds (weaker: capped at Medium).
+    fn name_service(&self, tx: &UtxoTx, check_outputs: bool) -> Option<NamedService> {
+        let best_input = tx
+            .input_addresses()
+            .into_iter()
+            .filter_map(|a| self.labels.lookup(a))
+            .filter(|l| self.stops_at(l))
+            .max_by_key(|l| l.claim.confidence());
+        if let Some(label) = best_input {
+            let confidence = label.claim.confidence();
+            let evidence = vec![
+                format!(
+                    "{} was spent together with the traced funds in this transaction",
+                    label.address
+                ),
+                label_evidence(&label),
+                "inputs spent together (outside CoinJoins) belong to one wallet".into(),
+            ];
+            return Some(NamedService {
+                label,
+                confidence,
+                evidence,
+            });
+        }
+        if !check_outputs {
+            return None;
+        }
+        let label = tx
+            .outputs
+            .iter()
+            .filter_map(|o| o.address.as_ref())
+            .filter_map(|a| self.labels.lookup(a))
+            .filter(|l| self.stops_at(l))
+            .max_by_key(|l| l.claim.confidence())?;
+        let confidence = label.claim.confidence().min(Confidence::Medium);
+        let evidence = vec![
+            format!("the swept funds went to {}", label.address),
+            label_evidence(&label),
+        ];
+        Some(NamedService {
+            label,
+            confidence,
+            evidence,
+        })
+    }
+
+    /// For a CoinJoin, a labelled mixer address among its inputs or outputs (e.g. a
+    /// coordinator fee address) names the mixer.
+    fn name_mixer(&self, tx: &UtxoTx) -> Option<Label> {
+        tx.inputs
+            .iter()
+            .filter_map(|i| i.address.as_ref())
+            .chain(tx.outputs.iter().filter_map(|o| o.address.as_ref()))
+            .filter_map(|a| self.labels.lookup(a))
+            .find(|l| l.category == EntityCategory::Mixer)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -480,9 +590,21 @@ impl<'a> Tracer<'a> {
 
             let shape = classify(&stx);
             if let TxShape::CoinJoin(info) = &shape {
+                let mut evidence = info.evidence.clone();
+                let title = match self.name_mixer(&stx) {
+                    Some(l) => {
+                        evidence.push(format!(
+                            "{} in this transaction: {}",
+                            l.address,
+                            label_evidence(&l)
+                        ));
+                        format!("Mixed in {}: {}", l.entity, info.kind.label())
+                    }
+                    None => format!("Mixed in {}", info.kind.label()),
+                };
                 self.add_lead(
                     LeadKind::Endpoint,
-                    format!("Mixed in {}", info.kind.label()),
+                    title,
                     Some(EntityCategory::Mixer),
                     None,
                     Some(stx.txid.clone()),
@@ -492,7 +614,7 @@ impl<'a> Tracer<'a> {
                     Claim::Inference {
                         heuristic: "coinjoin".into(),
                         confidence: info.confidence,
-                        evidence: info.evidence.clone(),
+                        evidence,
                     },
                     &path,
                 );
@@ -501,29 +623,51 @@ impl<'a> Tracer<'a> {
             if let Some(conf) = shape.service_confidence()
                 && conf >= self.config.stop_confidence
             {
-                let title = match &shape {
+                let what = match &shape {
                     TxShape::Consolidation {
                         distinct_inputs, ..
                     } => format!(
-                        "Likely service: deposit swept together with {} other addresses",
+                        "deposit swept together with {} other addresses",
                         distinct_inputs.saturating_sub(1)
                     ),
-                    _ => format!("Likely service: wallet paid out in a {}", shape.describe()),
+                    _ => format!("wallet paid out in a {}", shape.describe()),
+                };
+                let consolidation = matches!(shape, TxShape::Consolidation { .. });
+                let (title, category, claim) = match self.name_service(&stx, consolidation) {
+                    Some(n) => {
+                        let mut evidence = vec![shape.describe()];
+                        evidence.extend(n.evidence);
+                        (
+                            format!("{}: {what}", label_title(&n.label)),
+                            n.label.category,
+                            Claim::Inference {
+                                heuristic: "label.same_wallet".into(),
+                                // Both the shape and the label must hold.
+                                confidence: n.confidence.min(conf),
+                                evidence,
+                            },
+                        )
+                    }
+                    None => (
+                        format!("Likely service: {what}"),
+                        EntityCategory::UnknownService,
+                        Claim::Inference {
+                            heuristic: "service.tx_shape".into(),
+                            confidence: conf,
+                            evidence: vec![shape.describe()],
+                        },
+                    ),
                 };
                 self.add_lead(
                     LeadKind::Endpoint,
                     title,
-                    Some(EntityCategory::UnknownService),
+                    Some(category),
                     coin.address.clone(),
                     Some(stx.txid.clone()),
                     coin.amount,
                     time,
                     hop,
-                    Claim::Inference {
-                        heuristic: "service.tx_shape".into(),
-                        confidence: conf,
-                        evidence: vec![shape.describe()],
-                    },
+                    claim,
                     &path,
                 );
                 continue;
@@ -670,9 +814,21 @@ impl<'a> Tracer<'a> {
                     continue;
                 }
                 TxShape::CoinJoin(info) => {
+                    let mut evidence = info.evidence.clone();
+                    let title = match self.name_mixer(&tx) {
+                        Some(l) => {
+                            evidence.push(format!(
+                                "{} in this transaction: {}",
+                                l.address,
+                                label_evidence(&l)
+                            ));
+                            format!("Came out of {}: {}", l.entity, info.kind.label())
+                        }
+                        None => format!("Came out of {}", info.kind.label()),
+                    };
                     self.add_lead(
                         LeadKind::Endpoint,
-                        format!("Came out of {}", info.kind.label()),
+                        title,
                         Some(EntityCategory::Mixer),
                         None,
                         Some(tx.txid.clone()),
@@ -682,7 +838,7 @@ impl<'a> Tracer<'a> {
                         Claim::Inference {
                             heuristic: "coinjoin".into(),
                             confidence: info.confidence,
-                            evidence: info.evidence.clone(),
+                            evidence,
                         },
                         &src.path,
                     );
@@ -694,21 +850,43 @@ impl<'a> Tracer<'a> {
                 && conf >= self.config.stop_confidence
             {
                 // Funds left a service wallet (withdrawal batch or swept hot wallet).
-                let sender = tx.input_addresses().first().map(|a| (*a).clone());
+                let what = format!("funds sent in a {}", shape.describe());
+                let (title, category, sender, claim) = match self.name_service(&tx, false) {
+                    Some(n) => {
+                        let mut evidence = vec![shape.describe()];
+                        evidence.extend(n.evidence);
+                        (
+                            format!("{}: {what}", label_title(&n.label)),
+                            n.label.category,
+                            Some(n.label.address.clone()),
+                            Claim::Inference {
+                                heuristic: "label.same_wallet".into(),
+                                confidence: n.confidence.min(conf),
+                                evidence,
+                            },
+                        )
+                    }
+                    None => (
+                        format!("Likely service: {what}"),
+                        EntityCategory::UnknownService,
+                        tx.input_addresses().first().map(|a| (*a).clone()),
+                        Claim::Inference {
+                            heuristic: "service.tx_shape".into(),
+                            confidence: conf,
+                            evidence: vec![shape.describe()],
+                        },
+                    ),
+                };
                 self.add_lead(
                     LeadKind::Endpoint,
-                    format!("Likely service: funds sent in a {}", shape.describe()),
-                    Some(EntityCategory::UnknownService),
+                    title,
+                    Some(category),
                     sender,
                     Some(tx.txid.clone()),
                     src.amount,
                     time,
                     src.hop,
-                    Claim::Inference {
-                        heuristic: "service.tx_shape".into(),
-                        confidence: conf,
-                        evidence: vec![shape.describe()],
-                    },
+                    claim,
                     &src.path,
                 );
                 continue;

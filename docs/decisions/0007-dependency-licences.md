@@ -21,4 +21,4 @@ Checked on 2026-11-26: every dependency in `Cargo.lock` meets this.
 - The Tauri desktop shell may bring MPL-2.0 dependencies. MPL-2.0 is file-level copyleft
   and is commonly accepted for unmodified dependencies of Apache-2.0 projects; decide when
   Phase 3 starts.
-- A licence check (e.g. `cargo deny`) should be added to CI.
+- CI runs `tools/check_licences.py` on every push.

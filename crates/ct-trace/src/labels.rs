@@ -3,11 +3,8 @@
 
 use std::collections::HashMap;
 
+pub use ct_core::LabelLookup;
 use ct_core::{Address, Label};
-
-pub trait LabelLookup: Send + Sync {
-    fn lookup(&self, address: &Address) -> Option<Label>;
-}
 
 /// No labels: endpoints are found by behaviour only.
 pub struct NoLabels;

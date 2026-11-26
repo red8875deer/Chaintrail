@@ -49,6 +49,21 @@ confidence and the evidence.
 - Leads that stop because of limits or data errors are reported as **not followed**,
   separately from real endpoints.
 
+### Labels during a trace
+
+- A labelled address **stops** the trace if its category is an endpoint (anything but
+  `individual`) and its confidence is at least the stop level (Medium by default).
+  Weaker labels are listed as "labelled addresses passed through" and tracing continues.
+- A service detected by **transaction shape** (deposit consolidation, batch payout) is
+  **named** from labels on addresses of the same wallet: any labelled input of the
+  transaction (common-input ownership), or, for consolidations, the address that received
+  the swept funds (capped at Medium). The lead's confidence is the lower of the shape's and
+  the label's, and its evidence includes the label's source link.
+- A CoinJoin is named when a labelled mixer address (e.g. a coordinator fee address)
+  appears in it.
+- When several labels exist for an address, the strongest wins; at equal confidence a
+  sanctions label is shown first, then the user's own labels.
+
 ## 3. Bitcoin (UTXO) heuristics
 
 Each heuristic returns a score in `[0,1]` and evidence text. Scores combine into a

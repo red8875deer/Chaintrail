@@ -242,6 +242,7 @@ async fn labels_take_priority() {
             source: "test".into(),
             confidence: Confidence::High,
             as_of: None,
+            url: None,
         },
         note: None,
     }]);
@@ -256,7 +257,7 @@ async fn labels_take_priority() {
     )
     .await;
     let lead = &r.leads[0];
-    assert_eq!(lead.title, "Example Exchange");
+    assert_eq!(lead.title, "Example Exchange (exchange)");
     assert_eq!(lead.category, Some(EntityCategory::Exchange));
     assert!(matches!(lead.claim, Claim::Attribution { .. }));
 }
@@ -499,4 +500,189 @@ async fn bad_seed_is_an_error() {
         .await
         .is_err()
     );
+}
+
+fn label(n: u8, entity: &str, category: EntityCategory, confidence: Confidence) -> Label {
+    Label {
+        address: addr(n),
+        entity: entity.into(),
+        category,
+        claim: Claim::Attribution {
+            source: "test-pack".into(),
+            confidence,
+            as_of: None,
+            url: Some("https://example.org/list".into()),
+        },
+        note: None,
+    }
+}
+
+/// Deposit address 9 is swept with 59 others; one co-spent address (100) is a labelled
+/// exchange wallet, so the deposit is that exchange's.
+fn sweep_graph() -> MemoryBitcoin {
+    let t2 = tx(
+        &txid(2),
+        101,
+        &[(&txid(1), 0, &addr(2), BTC)],
+        &[(&addr(9), BTC - 1_000)],
+    );
+    let mut ins: Vec<(String, u32, ct_core::Address, u64)> =
+        vec![(txid(2), 0, addr(9), BTC - 1_000)];
+    for i in 0..59u8 {
+        ins.push((txid(1000 + i as u32), 0, addr(100 + i), 1_000_000));
+    }
+    let ins_ref: Vec<(&str, u32, &ct_core::Address, u64)> = ins
+        .iter()
+        .map(|(t, v, a, x)| (t.as_str(), *v, a, *x))
+        .collect();
+    let sweep = tx(&txid(3), 102, &ins_ref, &[(&addr(250), 150 * BTC / 100)]);
+    MemoryBitcoin::new([victim_payment(), t2, sweep])
+}
+
+#[tokio::test]
+async fn consolidation_is_named_by_a_co_spent_label() {
+    let p = sweep_graph();
+    let labels = MemoryLabels::new([label(
+        100,
+        "Example Exchange",
+        EntityCategory::Exchange,
+        Confidence::High,
+    )]);
+    let r = run_with_labels(
+        &p,
+        &labels,
+        Seed::Output {
+            txid: txid(1),
+            vout: 0,
+        },
+        forward(),
+    )
+    .await;
+    let lead = &r.leads[0];
+    assert_eq!(lead.category, Some(EntityCategory::Exchange));
+    assert!(
+        lead.title
+            .starts_with("Example Exchange (exchange): deposit swept"),
+        "{}",
+        lead.title
+    );
+    assert_eq!(lead.address, Some(addr(9)));
+    // Shape (Medium, 60 inputs) and label (High) must both hold: Medium.
+    assert_eq!(lead.confidence, Confidence::Medium);
+    match &lead.claim {
+        Claim::Inference {
+            heuristic,
+            evidence,
+            ..
+        } => {
+            assert_eq!(heuristic, "label.same_wallet");
+            assert!(
+                evidence
+                    .iter()
+                    .any(|e| e.contains("https://example.org/list"))
+            );
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn consolidation_named_by_swept_destination_is_capped_at_medium() {
+    let p = sweep_graph();
+    let labels = MemoryLabels::new([label(
+        250,
+        "Example Exchange",
+        EntityCategory::Exchange,
+        Confidence::High,
+    )]);
+    let r = run_with_labels(
+        &p,
+        &labels,
+        Seed::Output {
+            txid: txid(1),
+            vout: 0,
+        },
+        forward(),
+    )
+    .await;
+    let lead = &r.leads[0];
+    assert_eq!(lead.category, Some(EntityCategory::Exchange));
+    assert_eq!(lead.confidence, Confidence::Medium);
+}
+
+#[tokio::test]
+async fn weak_labels_are_reported_but_do_not_stop() {
+    let t2 = tx(
+        &txid(2),
+        101,
+        &[(&txid(1), 0, &addr(2), BTC)],
+        &[(&addr(10), BTC - 1_000)],
+    );
+    let t3 = tx(
+        &txid(3),
+        102,
+        &[(&txid(2), 0, &addr(10), BTC - 1_000)],
+        &[(&addr(11), BTC - 2_000)],
+    );
+    let p = MemoryBitcoin::new([victim_payment(), t2, t3]);
+    let labels = MemoryLabels::new([label(
+        10,
+        "Rumoured Exchange",
+        EntityCategory::Exchange,
+        Confidence::Low,
+    )]);
+    let r = run_with_labels(
+        &p,
+        &labels,
+        Seed::Output {
+            txid: txid(1),
+            vout: 0,
+        },
+        forward(),
+    )
+    .await;
+    assert_eq!(r.leads[0].kind, LeadKind::AtRest);
+    assert_eq!(r.leads[0].address, Some(addr(11)));
+    assert_eq!(r.labels_seen.len(), 1);
+    assert_eq!(r.labels_seen[0].entity, "Rumoured Exchange");
+}
+
+#[tokio::test]
+async fn backward_batch_payout_is_named_by_sender_label() {
+    let hot = addr(200);
+    let batch_addrs: Vec<_> = (0..59u8).map(|i| addr(120 + i)).collect();
+    let a31 = addr(31);
+    let mut outs: Vec<(&ct_core::Address, u64)> = vec![(&a31, BTC)];
+    outs.extend(batch_addrs.iter().map(|a| (a, 1_000_000)));
+    let batch = tx(&txid(11), 60, &[(&txid(999), 0, &hot, 200 * BTC)], &outs);
+    let p = MemoryBitcoin::new([batch]);
+    let labels = MemoryLabels::new([label(
+        200,
+        "Example Exchange",
+        EntityCategory::Exchange,
+        Confidence::High,
+    )]);
+    let r = run_with_labels(
+        &p,
+        &labels,
+        Seed::Output {
+            txid: txid(11),
+            vout: 0,
+        },
+        TraceConfig {
+            direction: Direction::Backward,
+            min_amount: Some(1),
+            ..Default::default()
+        },
+    )
+    .await;
+    let lead = &r.leads[0];
+    assert_eq!(lead.category, Some(EntityCategory::Exchange));
+    assert!(
+        lead.title
+            .starts_with("Example Exchange (exchange): funds sent in a batch payout"),
+        "{}",
+        lead.title
+    );
+    assert_eq!(lead.address, Some(addr(200)));
 }

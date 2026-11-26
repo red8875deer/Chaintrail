@@ -25,7 +25,9 @@ next session can continue without re-deriving context.
 - `crates/ct-heuristics` – pure heuristics (CoinJoin, change, shape, services, clusters)
 - `crates/ct-trace` – trace engine + `testing` module (in-memory provider, tx builders)
 - `crates/ct-cli` – `chaintrail` binary
-- `data/labels` – open label dataset (planned)
+- `crates/ct-labels` – label packs (TOML), index, OFAC importer; `build.rs` embeds `data/labels/*.toml`
+- `data/labels` – built-in label packs + `SOURCES.md` (generated)
+- `tools/import_graphsense.py` – regenerates `gs-*.toml` packs from a GraphSense checkout
 
 ## Commands
 ```sh
@@ -35,6 +37,9 @@ cargo test --workspace                 # offline
 cargo test --workspace -- --ignored    # live API tests (needs network)
 cargo run -p ct-cli -- btc address <addr>
 cargo run -p ct-cli -- btc trace <txid> [--vout N | --to ADDR] [--backward]
+cargo run -p ct-cli -- labels lookup <addr> | labels packs | labels add ... | labels update-ofac
+# regenerate built-in OFAC snapshot: labels update-ofac --file SDN.XML --out data/labels/ofac-sdn.toml
+# regenerate GraphSense packs: python3 tools/import_graphsense.py <graphsense-tagpacks checkout> data/labels
 ```
 
 ## Conventions
@@ -46,3 +51,5 @@ cargo run -p ct-cli -- btc trace <txid> [--vout N | --to ADDR] [--backward]
 - Heuristic thresholds/weights live as named constants next to their tests; change them
   together with `docs/TRACING.md`.
 - Dependency licences: see ADR-0007 (no copyleft without a decision).
+- Label data: only sources allowed by ADR-0008; never scrape explorer label pages. Add the
+  pack to the allowlist in `tools/import_graphsense.py` or document the source in SOURCES.md.

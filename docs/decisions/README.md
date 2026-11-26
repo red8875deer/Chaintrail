@@ -12,3 +12,4 @@ Supersede a decision with a new record instead of editing the old one.
 | [0005](0005-claims-model.md) | Facts, inferences and attributions are separate claim kinds | Accepted |
 | [0006](0006-license.md) | Apache-2.0 licence | Accepted (revisit before outside contributions) |
 | [0007](0007-dependency-licences.md) | Permissive dependency licences only | Accepted |
+| [0008](0008-label-data.md) | Label data sources and format | Accepted |

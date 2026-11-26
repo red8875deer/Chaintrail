@@ -4,8 +4,8 @@
 Bitcoin, Ethereum and Tron, see where they end up (exchanges, mixers, bridges, DeFi
 protocols, sanctioned wallets), and get a list of leads instead of a wall of wallet IDs.
 
-> Status: early development. Bitcoin tracing works on the command line (Phase 1); labels and
-> the desktop app come next. Not ready for real investigations yet.
+> Status: early development. Bitcoin tracing with address labels works on the command line
+> (Phases 1–2); the desktop app comes next. Not ready for real investigations yet.
 > See [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## Goals
@@ -43,7 +43,15 @@ cargo run -p ct-cli -- check TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t
 cargo run -p ct-cli -- btc trace f4184fc596403b9d638783cf57adfe4c75c605f6356fbc91338530e9831e9e16 --vout 0
 # Where did the funds of a transaction come from?
 cargo run -p ct-cli -- btc trace <txid> --backward
+
+# Who owns this address? (sanctions lists, exchanges, mixers, ransomware, ...)
+cargo run -p ct-cli -- labels lookup 1Kr6QSydW9bFQG1mXiPNNu6WpJGmUa9i1g
+# Keep the sanctions list current
+cargo run -p ct-cli -- labels update-ofac
 ```
+
+About 48,000 labelled addresses ship with the app, each with a link to its source (see
+[data/labels/SOURCES.md](data/labels/SOURCES.md)). Add your own with `labels add`.
 
 Fetched data is cached in your user data folder (`chaintrail/cache.sqlite`), so repeat
 traces are instant. Use `--no-cache` or `--cache PATH` to change that.
