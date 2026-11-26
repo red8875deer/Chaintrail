@@ -54,12 +54,33 @@ export function ShapeIcon({ k }: { k: NodeStyleKey }) {
   );
 }
 
+// Closed by default so it does not cover the graph; the choice is remembered.
+const LEGEND_KEY = "chaintrail.legend.open";
+function legendOpen(): boolean {
+  try {
+    return window.localStorage.getItem(LEGEND_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+function rememberLegend(open: boolean) {
+  try {
+    window.localStorage.setItem(LEGEND_KEY, open ? "1" : "0");
+  } catch {
+    // Storage blocked: the legend just opens closed next time.
+  }
+}
+
 export function Legend({ view }: { view: TraceView }) {
   const present = new Set(view.graph.nodes.map(nodeStyleKey));
   const keys = (Object.keys(NODE_STYLES) as NodeStyleKey[]).filter((k) => present.has(k));
   const hasChange = view.graph.edges.some((e) => e.role.role === "change");
   return (
-    <details className="legend" open>
+    <details
+      className="legend"
+      open={legendOpen()}
+      onToggle={(e) => rememberLegend((e.currentTarget as HTMLDetailsElement).open)}
+    >
       <summary>Legend</summary>
       <ul>
         {keys.map((k) => (
@@ -70,9 +91,22 @@ export function Legend({ view }: { view: TraceView }) {
         ))}
         <li>
           <svg width="16" height="16" aria-hidden="true">
+            <circle cx="8" cy="8" r="5.5" fill="var(--n-address)" stroke="var(--muted)" strokeWidth="2.5" strokeDasharray="0" />
+            <circle cx="8" cy="8" r="7.2" fill="none" stroke="var(--muted)" strokeWidth="1" />
+          </svg>
+          Group of smaller branches (click to open)
+        </li>
+        <li>
+          <svg width="16" height="16" aria-hidden="true">
+            <rect x="1" y="5" width="14" height="6" rx="3" fill="var(--surface)" stroke="var(--trail)" strokeWidth="1.5" strokeDasharray="2.5 1.5" />
+          </svg>
+          Addresses in a row (click to open)
+        </li>
+        <li>
+          <svg width="16" height="16" aria-hidden="true">
             <line x1="1" y1="8" x2="15" y2="8" stroke="var(--trail)" strokeWidth="2.5" />
           </svg>
-          Funds moved (thicker = more)
+          Funds moved (thicker = more; ×N = N transfers combined)
         </li>
         {hasChange && (
           <li>

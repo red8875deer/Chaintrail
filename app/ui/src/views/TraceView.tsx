@@ -1,6 +1,6 @@
 // The trace workspace: form, graph, leads and details.
 
-import { type FormEvent, useCallback, useEffect, useRef, useState } from "react";
+import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { TraceProgress, TraceRequest, TraceView as View } from "../api/types";
 import { call, isDesktop, onTraceProgress } from "../api/client";
 import { ErrorBox } from "../components/bits";
@@ -9,7 +9,8 @@ import { type GraphControls, GraphCanvas, type Selection } from "../components/G
 import { LeadsPanel } from "../components/LeadsPanel";
 import { Legend } from "../components/Legend";
 import { exportCsv, exportJson, exportPng } from "../lib/export";
-import { formatElapsed, parseBtc } from "../lib/format";
+import { formatElapsed, formatInt, parseBtc } from "../lib/format";
+import { buildDisplay, defaultMinShareBp, displayPath, isGroupId, leadPath, nodeForLead } from "../lib/graph";
 import { type TraceParams, href } from "../lib/route";
 
 function plural(n: number, one: string, many = `${one}s`): string {
@@ -71,6 +72,8 @@ export function TraceView({ params }: { params: TraceParams | null }) {
   const [selectedLead, setSelectedLead] = useState<number | null>(null);
   const [selection, setSelection] = useState<Selection>(null);
   const [hideBp, setHideBp] = useState(0);
+  const [simplify, setSimplify] = useState(true);
+  const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
   const controls = useRef<GraphControls | null>(null);
   const runId = useRef(0);
 
@@ -110,7 +113,8 @@ export function TraceView({ params }: { params: TraceParams | null }) {
       const v = await call("btc_trace", req);
       if (id !== runId.current) return;
       setView(v);
-      setHideBp(0);
+      setHideBp(defaultMinShareBp(v));
+      setExpanded(new Set());
       // Show the strongest result at once: the largest endpoint, else the largest branch.
       const first = v.report.leads.findIndex((l) => l.kind.kind !== "unexplored");
       setSelectedLead(first >= 0 ? first : v.report.leads.length > 0 ? 0 : null);
@@ -140,6 +144,34 @@ export function TraceView({ params }: { params: TraceParams | null }) {
     void run(form);
   };
   const set = <K extends keyof FormState>(k: K, v: FormState[K]) => setForm((f) => ({ ...f, [k]: v }));
+
+  // What is drawn: small flows hidden, small branches grouped, the selected path always kept.
+  const reportPath = useMemo(
+    () => (view && selectedLead !== null ? leadPath(view, selectedLead) : null),
+    [view, selectedLead],
+  );
+  const display = useMemo(
+    () =>
+      view
+        ? buildDisplay(view, {
+            minShareBp: hideBp,
+            simplify,
+            expanded,
+            keep: reportPath?.nodes ?? new Set<string>(),
+          })
+        : null,
+    [view, hideBp, simplify, expanded, reportPath],
+  );
+  const path = useMemo(() => (display && reportPath ? displayPath(display, reportPath) : null), [display, reportPath]);
+  const focusId = useMemo(() => {
+    if (!view || !display || selectedLead === null) return null;
+    const n = nodeForLead(view, selectedLead);
+    return n ? (display.nodeOf.get(n.id) ?? null) : null;
+  }, [view, display, selectedLead]);
+  const expand = (id: string) => {
+    setExpanded((cur) => new Set([...cur, id]));
+    setSelection(null);
+  };
 
   const selectLead = (i: number) => {
     setSelectedLead((cur) => (cur === i ? null : i));
@@ -219,25 +251,43 @@ export function TraceView({ params }: { params: TraceParams | null }) {
         <div className="canvas-wrap">
           {view && !running && (
             <>
-              <GraphCanvas
-                view={view}
-                selectedLead={selectedLead}
-                selected={selection}
-                hideBelowBp={hideBp}
-                onSelect={(s) => {
-                  setSelection(s);
-                  if (s?.type === "node") {
-                    const n = view.graph.nodes.find((x) => x.id === s.id);
-                    setSelectedLead(n?.lead ? n.lead.index : null);
-                  }
-                }}
-                controls={controls}
-              />
+              {display && (
+                <GraphCanvas
+                  display={display}
+                  path={path}
+                  focusId={focusId}
+                  selected={selection}
+                  onSelect={(s) => {
+                    setSelection(s);
+                    if (s?.type === "node" && !isGroupId(s.id)) {
+                      const n = view.graph.nodes.find((x) => x.id === s.id);
+                      // Keep the chosen lead if it ends here too (several can share an address).
+                      setSelectedLead((cur) =>
+                        n?.lead ? (cur !== null && n.lead.others.includes(cur) ? cur : n.lead.index) : null,
+                      );
+                    } else if (s?.type === "node") {
+                      setSelectedLead(null);
+                    }
+                  }}
+                  controls={controls}
+                />
+              )}
               <Legend view={view} />
+              {display && (display.hidden > 0 || display.groups.size > 0) && (
+                <p className="view-note" role="status">
+                  Showing {formatInt(display.shown)} of {formatInt(display.total)} addresses.{" "}
+                  {display.hidden > 0 && `${formatInt(display.hidden)} with flows under ${(hideBp / 100).toFixed(hideBp % 100 ? 1 : 0)}% are hidden. `}
+                  {display.groups.size > 0 && "Grouped branches show their count; click one to open it."}
+                </p>
+              )}
               <div className="canvas-tools" role="toolbar" aria-label="Graph tools">
                 <label title="Hide flows smaller than this share of the traced amount">
-                  Hide under {(hideBp / 100).toFixed(hideBp < 100 ? 2 : 0)}%
+                  Hide flows under {(hideBp / 100).toFixed(hideBp % 100 ? 1 : 0)}%
                   <input type="range" min={0} max={1000} step={10} value={hideBp} onChange={(e) => setHideBp(Number(e.target.value))} />
+                </label>
+                <label title="Group many small branches and collapse long runs of plain addresses">
+                  <input type="checkbox" checked={simplify} onChange={(e) => setSimplify(e.target.checked)} />
+                  Group small branches
                 </label>
                 <button type="button" className="btn subtle" onClick={() => controls.current?.fit()}>
                   Fit
@@ -285,6 +335,8 @@ export function TraceView({ params }: { params: TraceParams | null }) {
                 {error ? <ErrorBox error={error} /> : null}
                 <DetailsPanel
                   view={view}
+                  display={display}
+                  onExpand={expand}
                   selection={selection}
                   selectedLead={selection ? null : selectedLead}
                   onClose={() => {

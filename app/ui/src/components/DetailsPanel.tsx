@@ -1,8 +1,8 @@
 // Details of the selected node, edge or lead, with every claim explained in plain words.
 
 import type { Claim, GraphNode, Lead, TraceView } from "../api/types";
-import { formatShare, formatUtc } from "../lib/format";
-import { edgeById, nodeById } from "../lib/graph";
+import { formatBtcShort, formatShare, formatUtc } from "../lib/format";
+import { type Display, edgeById, isGroupId, nodeById, nodeForLead } from "../lib/graph";
 import { categoryName, describeClaim, leadKindExplanation, leadKindName, roleText } from "../lib/meaning";
 import { type TraceParams, href } from "../lib/route";
 import { Basis, Btc, CategoryTag, Id, Meter } from "./bits";
@@ -56,18 +56,121 @@ function nextTrace(view: TraceView, node: GraphNode, lead: Lead | undefined): Tr
   return null;
 }
 
+function GroupDetails({
+  view,
+  display,
+  id,
+  onExpand,
+  onClose,
+}: {
+  view: TraceView;
+  display: Display;
+  id: string;
+  onExpand: (id: string) => void;
+  onClose: () => void;
+}) {
+  const g = display.groups.get(id);
+  if (!g) return null;
+  const r = view.report;
+  const chain = g.kind === "chain";
+  const members = g.members.map((m) => nodeById(view, m)).filter((n): n is GraphNode => !!n);
+  return (
+    <section className="details" aria-label="Selected group">
+      <div className="details-head">
+        <h3>{chain ? `${members.length} addresses in a row` : `${members.length} smaller branches`}</h3>
+        <button type="button" className="btn subtle" onClick={onClose}>
+          Close
+        </button>
+      </div>
+      <p>
+        <Btc sats={g.amount} /> <span className="muted small">{formatShare(g.amount, r.seed_amount)} of the traced amount</span>
+      </p>
+      <p className="small muted">
+        {chain
+          ? "The funds passed straight through these unlabelled addresses, one after another. They are drawn as one step to keep the graph readable."
+          : "These branches are drawn as one point to keep the graph readable. Each is still listed with the leads."}
+      </p>
+      <ul className="evidence" style={{ maxHeight: 220, overflow: "auto" }}>
+        {members.slice(0, 50).map((n) => (
+          <li key={n.id}>
+            <span className="mono">{n.label}</span> {formatBtcShort(n.lead?.amount ?? Math.max(n.amount_in, n.amount_out))} BTC
+            {n.lead ? ` (${n.lead.title})` : ""}
+          </li>
+        ))}
+        {members.length > 50 && <li>and {members.length - 50} more</li>}
+      </ul>
+      <div className="actions">
+        <button type="button" className="btn primary" onClick={() => onExpand(id)}>
+          {chain ? "Show each address" : `Show all ${members.length}`}
+        </button>
+      </div>
+    </section>
+  );
+}
+
 export function DetailsPanel({
   view,
+  display,
+  onExpand,
   selection,
   selectedLead,
   onClose,
 }: {
   view: TraceView;
+  display: Display | null;
+  onExpand: (id: string) => void;
   selection: Selection;
   selectedLead: number | null;
   onClose: () => void;
 }) {
   const r = view.report;
+
+  if (selection?.type === "node" && isGroupId(selection.id) && display) {
+    return <GroupDetails view={view} display={display} id={selection.id} onExpand={onExpand} onClose={onClose} />;
+  }
+
+  if (selection?.type === "edge" && selection.id.startsWith("agg|") && display) {
+    const el = display.elements.find((e) => e.data.id === selection.id);
+    if (!el) return null;
+    const label = (id: unknown) => {
+      const s = String(id);
+      const g = display.groups.get(s);
+      if (g) return g.kind === "chain" ? `${g.members.length} addresses in a row` : `${g.members.length} smaller branches`;
+      return nodeById(view, s)?.label ?? s;
+    };
+    const members = view.graph.edges
+      .filter((e) => display.edgeOf.get(e.id) === selection.id)
+      .sort((a, b) => b.amount - a.amount);
+    return (
+      <section className="details" aria-label="Selected flow">
+        <div className="details-head">
+          <h3>Funds moved (combined)</h3>
+          <button type="button" className="btn subtle" onClick={onClose}>
+            Close
+          </button>
+        </div>
+        <p>
+          <Btc sats={Number(el.data.amount)} />{" "}
+          <span className="muted small">{formatShare(Number(el.data.amount), r.seed_amount)} of the traced amount</span>
+        </p>
+        <p className="small">
+          From <span className="mono">{label(el.data.source)}</span> to <span className="mono">{label(el.data.target)}</span>
+        </p>
+        <p className="small muted">
+          {members.length} transfer{members.length === 1 ? "" : "s"} drawn as one line, with their total.
+        </p>
+        <ul className="evidence" style={{ maxHeight: 220, overflow: "auto" }}>
+          {members.slice(0, 30).map((e) => (
+            <li key={e.id}>
+              {formatBtcShort(e.amount)} BTC, {formatUtc(e.time)}{" "}
+              <Id value={e.txid} short href={href({ page: "tx", txid: e.txid })} />
+            </li>
+          ))}
+          {members.length > 30 && <li>and {members.length - 30} more</li>}
+        </ul>
+      </section>
+    );
+  }
 
   if (selection?.type === "edge") {
     const e = edgeById(view, selection.id);
@@ -109,10 +212,14 @@ export function DetailsPanel({
     selection?.type === "node"
       ? nodeById(view, selection.id)
       : selectedLead !== null
-        ? view.graph.nodes.find((n) => n.lead?.index === selectedLead)
+        ? nodeForLead(view, selectedLead)
         : undefined;
   if (!node) return null;
-  const lead = node.lead ? r.leads[node.lead.index] : undefined;
+  // Several leads can end at one address: show the chosen one, and list the others.
+  const here = node.lead ? [node.lead.index, ...node.lead.others] : [];
+  const leadIndex = selectedLead !== null && here.includes(selectedLead) ? selectedLead : here[0];
+  const lead = leadIndex !== undefined ? r.leads[leadIndex] : undefined;
+  const otherLeads = here.filter((i) => i !== leadIndex);
   const seen = r.labels_seen.find((l) => l.address.value === node.address);
   const next = nextTrace(view, node, lead);
   const title = node.entity ?? (node.kind === "transaction" ? "Transaction" : node.seed ? "Start of the trace" : "Address");
@@ -146,6 +253,18 @@ export function DetailsPanel({
             Reached after {lead.hops} hop{lead.hops === 1 ? "" : "s"}
             {lead.first_time !== null ? `, first on ${formatUtc(lead.first_time)}` : ""}.
           </p>
+          {otherLeads.length > 0 && (
+            <div className="small">
+              Funds also reached this address by {otherLeads.length === 1 ? "another route" : `${otherLeads.length} other routes`}:
+              <ul className="evidence">
+                {otherLeads.map((i) => (
+                  <li key={i}>
+                    {r.leads[i]!.title}: <Btc sats={r.leads[i]!.amount} />
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
         </div>
       )}
       {!lead && seen && <ClaimExplained claim={seen.claim} />}

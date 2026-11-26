@@ -882,3 +882,66 @@ async fn graph_node_totals_never_exceed_the_traced_amount() {
         );
     }
 }
+
+#[tokio::test]
+async fn graph_keeps_every_lead_that_ends_at_the_same_address() {
+    use ct_trace::graph::build;
+    // addr 3 gets part of the funds directly (left unspent) and the rest via addr 4, which
+    // it spends again after the hop limit: two different leads at one address.
+    let t2 = tx(
+        &txid(2),
+        101,
+        &[(&txid(1), 0, &addr(2), BTC)],
+        &[(&addr(3), BTC / 4), (&addr(4), BTC / 2 + BTC / 4 - 10_000)],
+    );
+    let t3 = tx(
+        &txid(3),
+        102,
+        &[(&txid(2), 1, &addr(4), BTC / 2 + BTC / 4 - 10_000)],
+        &[(&addr(3), BTC / 2 + BTC / 4 - 20_000)],
+    );
+    let t4 = tx(
+        &txid(4),
+        103,
+        &[(&txid(3), 0, &addr(3), BTC / 2 + BTC / 4 - 20_000)],
+        &[(&addr(5), BTC / 2 + BTC / 4 - 30_000)],
+    );
+    let p = MemoryBitcoin::new([victim_payment(), t2, t3, t4]);
+    let r = run(
+        &p,
+        Seed::Payment {
+            txid: txid(1),
+            address: addr(2),
+        },
+        TraceConfig {
+            max_hops: 2,
+            ..forward()
+        },
+    )
+    .await;
+    let at3: Vec<usize> = (0..r.leads.len())
+        .filter(|&i| r.leads[i].address == Some(addr(3)))
+        .collect();
+    assert_eq!(at3.len(), 2, "{:#?}", r.leads);
+    let g = build(&r);
+    let node = g
+        .nodes
+        .iter()
+        .find(|n| n.id == addr(3).to_string())
+        .unwrap();
+    let lead = node.lead.as_ref().unwrap();
+    let mut all: Vec<usize> = std::iter::once(lead.index)
+        .chain(lead.others.iter().copied())
+        .collect();
+    all.sort_unstable();
+    assert_eq!(all, at3);
+    assert_eq!(
+        lead.amount,
+        at3.iter().map(|&i| r.leads[i].amount).sum::<u64>()
+    );
+    // The main lead is the larger one.
+    assert_eq!(
+        lead.index,
+        *at3.iter().max_by_key(|&&i| r.leads[i].amount).unwrap()
+    );
+}

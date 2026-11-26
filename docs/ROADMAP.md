@@ -48,6 +48,7 @@ Dates are not committed; quality is.
 - [x] Interactive graph (Cytoscape, left-to-right by time), meaning shown by shape, colour and border
 - [x] Leads panel with share of funds, confidence, basis (fact / inferred / label) and accounting
 - [x] Selected lead's path highlighted; details explain every claim in plain words
+- [x] Readable large graphs: small flows hidden (adaptive, with notice), branches grouped, chains collapsed, parallel transfers combined, readable opening zoom (ADR-0011)
 - [x] Exports: report JSON, leads CSV, graph PNG
 - [x] Mock mode with recorded data; UI unit tests; browser checks with Playwright
 - [x] Release workflow for Windows / macOS / Linux installers (unsigned for now)

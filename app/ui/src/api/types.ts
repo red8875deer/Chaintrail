@@ -302,12 +302,15 @@ export interface TraceReport {
 export type NodeKind = "address" | "transaction" | "no_address";
 
 export interface NodeLead {
-  /** Index into TraceReport.leads. */
+  /** Index into TraceReport.leads (the main lead here: an endpoint, else the largest). */
   index: number;
   kind: LeadKind;
   title: string;
+  /** Total of every lead at this node. */
   amount: number;
   confidence: Confidence;
+  /** Other leads that end at the same node (the same address reached more than once). */
+  others: number[];
 }
 
 export interface GraphNode {

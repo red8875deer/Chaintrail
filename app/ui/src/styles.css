@@ -1022,3 +1022,23 @@ table.ledger a:hover,
   color: var(--muted);
   overflow-wrap: anywhere;
 }
+
+/* What the graph is showing, when it is not everything. */
+.view-note {
+  position: absolute;
+  left: 12px;
+  top: 12px;
+  max-width: 520px;
+  padding: 8px 12px;
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-left: 3px solid var(--trail);
+  border-radius: var(--radius-s);
+  box-shadow: var(--shadow);
+  font-size: 0.82rem;
+  color: var(--muted);
+}
+
+.canvas-tools label input[type="checkbox"] {
+  margin: 0;
+}

@@ -15,3 +15,4 @@ Supersede a decision with a new record instead of editing the old one.
 | [0008](0008-label-data.md) | Label data sources and format | Accepted |
 | [0009](0009-mpl-in-desktop-shell.md) | MPL-2.0 allowed for unmodified desktop-shell dependencies | Accepted |
 | [0010](0010-app-architecture.md) | One service, two front doors (desktop app and local browser mode) | Accepted |
+| [0011](0011-graph-display-layer.md) | The drawn graph is a readable view of the trace, never a different trace | Accepted |

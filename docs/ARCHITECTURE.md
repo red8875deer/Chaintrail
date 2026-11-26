@@ -48,7 +48,7 @@ warehouse, then cluster the whole chain). Instead ChainTrail **fetches on demand
 | `ct-labels` | done: pack format, OFAC importer, built-in packs from `data/labels` | The tracing engine (see [TRACING.md](TRACING.md)). |
 | `ct-service` | done | `AppService`: every UI command; request/response views (`views.rs`). |
 | `app/src-tauri` | done | Tauri 2 desktop shell; one command per `AppService` method; own Cargo workspace. |
-| `app/ui` | done | React + TypeScript + Cytoscape UI; `src/api/types.ts` mirrors `views.rs`; `?mock=1` uses `fixtures/`. |
+| `app/ui` | done | React + TypeScript + Cytoscape UI; `src/api/types.ts` mirrors `views.rs`; `?mock=1` uses `fixtures/`. Draws a readable display graph built from the report graph (`lib/graph.ts`, ADR-0011). |
 
 ## Data model
 

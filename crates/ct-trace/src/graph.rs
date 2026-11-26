@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use ct_core::{Claim, Confidence, EntityCategory};
 use serde::{Deserialize, Serialize};
 
-use crate::report::{Direction, FlowRole, LeadKind, TraceReport};
+use crate::report::{Direction, FlowRole, Lead, LeadKind, TraceReport};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -25,12 +25,15 @@ pub enum NodeKind {
 /// Lead information attached to a node.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NodeLead {
-    /// Index into `TraceReport::leads`.
+    /// Index into `TraceReport::leads` (the main lead here: an endpoint, else the largest).
     pub index: usize,
     pub kind: LeadKind,
     pub title: String,
+    /// Total of every lead at this node.
     pub amount: u64,
     pub confidence: Confidence,
+    /// Other leads that end at the same node (the same address reached more than once).
+    pub others: Vec<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -187,6 +190,23 @@ fn node_id(address: Option<&ct_core::Address>, txid: &str, side: &str) -> (Strin
 }
 
 /// Build the graph view of a trace report.
+/// Two leads end at the same node: keep both. The main one is an endpoint if there is one,
+/// else the larger; the node's amount is their total.
+fn merge_leads(a: NodeLead, b: NodeLead, leads: &[Lead]) -> NodeLead {
+    let named = |l: &NodeLead| matches!(leads[l.index].kind, LeadKind::Endpoint | LeadKind::Mined);
+    let (mut main, other) =
+        if named(&b) && !named(&a) || (named(&b) == named(&a) && b.amount > a.amount) {
+            (b, a)
+        } else {
+            (a, b)
+        };
+    main.amount += other.amount;
+    main.others.push(other.index);
+    main.others.extend(other.others);
+    main.others.sort_unstable();
+    main
+}
+
 pub fn build(report: &TraceReport) -> GraphView {
     let mut b = Builder {
         nodes: Vec::new(),
@@ -235,6 +255,7 @@ pub fn build(report: &TraceReport) -> GraphView {
             title: lead.title.clone(),
             amount: lead.amount,
             confidence: lead.confidence,
+            others: Vec::new(),
         };
         let id = match (&lead.address, &lead.txid) {
             (Some(a), _) => {
@@ -300,7 +321,10 @@ pub fn build(report: &TraceReport) -> GraphView {
                 .trim()
                 .to_string();
         }
-        n.lead = Some(info);
+        n.lead = Some(match n.lead.take() {
+            None => info,
+            Some(prev) => merge_leads(prev, info, &report.leads),
+        });
     }
 
     for seen in &report.labels_seen {
