@@ -170,8 +170,12 @@ impl Builder {
                 note,
             });
         }
-        self.nodes[self.index[source]].amount_out += amount;
-        self.nodes[self.index[target]].amount_in += amount;
+        // Funds an address sends back to itself are not new funds in or out; counting them
+        // would inflate the node's total beyond the traced amount.
+        if source != target {
+            self.nodes[self.index[source]].amount_out += amount;
+            self.nodes[self.index[target]].amount_in += amount;
+        }
     }
 }
 

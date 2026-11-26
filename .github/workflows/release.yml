@@ -1,0 +1,51 @@
+name: Release installers
+
+# Builds desktop installers for Windows, macOS and Linux and attaches them to a draft
+# GitHub release. Run it from the Actions tab, or push a tag like v0.1.0.
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: installers (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-22.04]
+    steps:
+      - uses: actions/checkout@v4
+      - name: System libraries for Tauri (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app/ui/package-lock.json
+      - run: npm ci
+        working-directory: app/ui
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: app/src-tauri
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: app
+          tauriScript: npx --yes @tauri-apps/cli@2.12.6
+          tagName: v__VERSION__
+          releaseName: ChainTrail v__VERSION__
+          releaseBody: |
+            Early test build. The installers are not code-signed yet, so Windows and macOS will
+            warn before opening them. See README.md for what this version can do.
+          releaseDraft: true
+          prerelease: true

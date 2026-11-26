@@ -25,6 +25,9 @@ const ALLOWED = new Set([
   "Unlicense",
   "Zlib",
   "BlueOak-1.0.0",
+  // Font files only (ADR-0007): the SIL Open Font Licence allows bundling fonts with any
+  // software and places no conditions on the software itself.
+  "OFL-1.1",
 ]);
 
 // Explicitly forbidden families (for a clearer message).

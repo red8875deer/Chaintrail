@@ -1,6 +1,8 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react-swc";
 
+declare const process: { env: Record<string, string | undefined> };
+
 // The ChainTrail service (`chaintrail serve`) listens on 127.0.0.1:7979 by default.
 const API_TARGET = process.env.CHAINTRAIL_API ?? "http://127.0.0.1:7979";
 

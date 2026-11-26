@@ -42,10 +42,19 @@ Dates are not committed; quality is.
 - [ ] Large packs as optional downloads (BitMEX 336k addresses, sextortion IOCs after licence review)
 
 ## Phase 3: Desktop app
-- [ ] Tauri 2 shell, React + TypeScript UI
-- [ ] Graph canvas (WebGL), left-to-right time-ordered layout
-- [ ] Leads panel, address/tx inspector, case save/load
-- [ ] One-click "trace forward / trace backward" from any node
+- [x] Shared service layer (`ct-service`) and local browser mode (`chaintrail serve`, token-protected)
+- [x] Tauri 2 shell with the same commands and live trace progress; Linux .deb verified
+- [x] React + TypeScript UI: search, address view, transaction view, labels page
+- [x] Interactive graph (Cytoscape, left-to-right by time), meaning shown by shape, colour and border
+- [x] Leads panel with share of funds, confidence, basis (fact / inferred / label) and accounting
+- [x] Selected lead's path highlighted; details explain every claim in plain words
+- [x] Exports: report JSON, leads CSV, graph PNG
+- [x] Mock mode with recorded data; UI unit tests; browser checks with Playwright
+- [x] Release workflow for Windows / macOS / Linux installers (unsigned for now)
+- [ ] Case files: save and reopen investigations with notes
+- [ ] PDF report
+- [ ] Code signing for installers
+- [ ] Third-party licence notice in release bundles (ADR-0009)
 
 ## Phase 4: Ethereum and Tron
 - [ ] Blockscout adapter (native, internal, ERC-20 transfers)

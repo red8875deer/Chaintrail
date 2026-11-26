@@ -137,3 +137,20 @@ export function csvCell(v: string | number | bigint | null | undefined): string 
   const s = String(v);
   return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
+
+/**
+ * Compact BTC for graph labels: 2 decimals at ≥ 1 BTC, 4 at ≥ 0.0001 BTC, otherwise every
+ * significant digit. Rounds half up with integers only. 6369998561 → "63.70".
+ */
+export function formatBtcShort(value: number | bigint | string): string {
+  const sats = toSats(value);
+  const abs = sats < 0n ? -sats : sats;
+  const sign = sats < 0n ? "-" : "";
+  const decimals = abs >= SATS_PER_BTC ? 2 : abs >= 10_000n ? 4 : 8;
+  const unit = 10n ** BigInt(8 - decimals);
+  const rounded = ((abs + unit / 2n) / unit) * unit;
+  const whole = groupThousands((rounded / SATS_PER_BTC).toString());
+  let frac = (rounded % SATS_PER_BTC).toString().padStart(8, "0").slice(0, decimals);
+  if (decimals === 8) frac = frac.replace(/0+$/, "");
+  return `${sign}${whole}${frac ? "." + frac : ""}`;
+}

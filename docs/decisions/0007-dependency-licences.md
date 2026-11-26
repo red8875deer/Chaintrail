@@ -10,7 +10,9 @@ agencies, without licence surprises.
 Dependencies (including transitive ones) may use: MIT, MIT-0, Apache-2.0, BSD-2/3-Clause,
 0BSD, ISC, Zlib, Unicode-3.0, CC0, Unlicense, public domain, and CDLA-Permissive-2.0 (a
 permissive data licence, used by the TLS root-certificate bundle). A dual licence counts
-if one of its options is allowed. Anything else, including MPL-2.0, LGPL, GPL or AGPL,
+if one of its options is allowed. Font files may use the SIL Open Font Licence 1.1
+(OFL-1.1), which permits bundling fonts with any software without conditions on the
+software (used for the Atkinson Hyperlegible typefaces in the UI). Anything else, including MPL-2.0, LGPL, GPL or AGPL,
 needs a new decision record before it is added.
 
 Checked on 2026-11-26: every dependency in `Cargo.lock` meets this.

@@ -4,8 +4,9 @@
 Bitcoin, Ethereum and Tron, see where they end up (exchanges, mixers, bridges, DeFi
 protocols, sanctioned wallets), and get a list of leads instead of a wall of wallet IDs.
 
-> Status: early development. Bitcoin tracing with address labels works on the command line
-> (Phases 1–2); the desktop app comes next. Not ready for real investigations yet.
+> Status: early development. Bitcoin tracing with address labels, an interactive graph and a
+> desktop app (Phases 1–3). Ethereum and Tron come next. Not yet ready to rely on for real
+> investigations: verify every lead.
 > See [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## Goals
@@ -30,20 +31,29 @@ protocols, sanctioned wallets), and get a list of leads instead of a wall of wal
 Why these: they carry most of the value in fraud, scam and ransomware cases, and each one
 has a free data source. See [docs/decisions](docs/decisions) for the reasoning.
 
-## Try it (developer preview)
+## Use it
 
-Requires a recent Rust toolchain.
+**Desktop app.** Installers for Windows, macOS and Linux are built by the
+[release workflow](.github/workflows/release.yml) and attached to the repository's
+releases. Early builds are not code-signed, so your system will warn before opening them.
+
+**In your browser, on your own computer.** Build once, then run:
 
 ```sh
-cargo run -p ct-cli -- btc address 12cbQLTFMXRnSzktFkuoG3eHoMeFtpTu3S
-cargo run -p ct-cli -- btc tx f4184fc596403b9d638783cf57adfe4c75c605f6356fbc91338530e9831e9e16
-cargo run -p ct-cli -- check TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t
+(cd app/ui && npm ci && npm run build)
+cargo run --release -p ct-cli -- serve
+# open the link it prints (http://127.0.0.1:7878/#token=…)
+```
 
+Only your computer can connect, and the link contains a one-time access token.
+
+**Command line.**
+
+```sh
 # Where did the 10 BTC of the first Bitcoin payment go?
 cargo run -p ct-cli -- btc trace f4184fc596403b9d638783cf57adfe4c75c605f6356fbc91338530e9831e9e16 --vout 0
 # Where did the funds of a transaction come from?
 cargo run -p ct-cli -- btc trace <txid> --backward
-
 # Who owns this address? (sanctions lists, exchanges, mixers, ransomware, ...)
 cargo run -p ct-cli -- labels lookup 1Kr6QSydW9bFQG1mXiPNNu6WpJGmUa9i1g
 # Keep the sanctions list current
@@ -51,10 +61,19 @@ cargo run -p ct-cli -- labels update-ofac
 ```
 
 About 48,000 labelled addresses ship with the app, each with a link to its source (see
-[data/labels/SOURCES.md](data/labels/SOURCES.md)). Add your own with `labels add`.
+[data/labels/SOURCES.md](data/labels/SOURCES.md)). Add your own from the Labels page or
+with `labels add`. Fetched data is cached in your user data folder
+(`chaintrail/cache.sqlite`), so repeat traces are instant.
 
-Fetched data is cached in your user data folder (`chaintrail/cache.sqlite`), so repeat
-traces are instant. Use `--no-cache` or `--cache PATH` to change that.
+### Build the desktop app yourself
+
+Needs Rust, Node.js 22 and, on Linux, `libwebkit2gtk-4.1-dev` and friends
+(see `.github/workflows/ci.yml`).
+
+```sh
+(cd app/ui && npm ci)
+cd app/src-tauri && npx @tauri-apps/cli@2 build
+```
 
 ## Documentation
 

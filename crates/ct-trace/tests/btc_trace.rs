@@ -841,3 +841,44 @@ async fn graph_of_a_trace() {
         );
     }
 }
+
+#[tokio::test]
+async fn graph_node_totals_never_exceed_the_traced_amount() {
+    use ct_trace::graph::build;
+    // addr 2 pays itself twice before moving on: the self-transfers must not be counted.
+    let t2 = tx(
+        &txid(2),
+        101,
+        &[(&txid(1), 0, &addr(2), BTC)],
+        &[(&addr(2), BTC - 1_000)],
+    );
+    let t3 = tx(
+        &txid(3),
+        102,
+        &[(&txid(2), 0, &addr(2), BTC - 1_000)],
+        &[(&addr(2), BTC - 2_000)],
+    );
+    let t4 = tx(
+        &txid(4),
+        103,
+        &[(&txid(3), 0, &addr(2), BTC - 2_000)],
+        &[(&addr(7), BTC - 3_000)],
+    );
+    let p = MemoryBitcoin::new([victim_payment(), t2, t3, t4]);
+    let r = run(
+        &p,
+        Seed::Output {
+            txid: txid(1),
+            vout: 0,
+        },
+        forward(),
+    )
+    .await;
+    let g = build(&r);
+    for n in &g.nodes {
+        assert!(
+            n.amount_in <= r.seed_amount && n.amount_out <= r.seed_amount,
+            "{n:?}"
+        );
+    }
+}

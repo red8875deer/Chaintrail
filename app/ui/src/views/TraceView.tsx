@@ -1,0 +1,327 @@
+// The trace workspace: form, graph, leads and details.
+
+import { type FormEvent, useCallback, useEffect, useRef, useState } from "react";
+import type { TraceProgress, TraceRequest, TraceView as View } from "../api/types";
+import { call, isDesktop, onTraceProgress } from "../api/client";
+import { ErrorBox } from "../components/bits";
+import { DetailsPanel } from "../components/DetailsPanel";
+import { type GraphControls, GraphCanvas, type Selection } from "../components/GraphCanvas";
+import { LeadsPanel } from "../components/LeadsPanel";
+import { Legend } from "../components/Legend";
+import { exportCsv, exportJson, exportPng } from "../lib/export";
+import { formatElapsed, parseBtc } from "../lib/format";
+import { type TraceParams, href } from "../lib/route";
+
+function plural(n: number, one: string, many = `${one}s`): string {
+  return `${n} ${n === 1 ? one : many}`;
+}
+
+interface FormState {
+  txid: string;
+  vout: string;
+  to: string;
+  direction: "forward" | "backward";
+  maxHops: string;
+  maxTxs: string;
+  minBtc: string;
+  checkAddresses: boolean;
+}
+
+function fromParams(p: TraceParams | null): FormState {
+  return {
+    txid: p?.txid ?? "",
+    vout: p?.vout !== undefined ? String(p.vout) : "",
+    to: p?.to ?? "",
+    direction: p?.direction ?? "forward",
+    maxHops: p?.maxHops !== undefined ? String(p.maxHops) : "8",
+    maxTxs: p?.maxTxs !== undefined ? String(p.maxTxs) : "100",
+    minBtc: p?.minBtc ?? "",
+    checkAddresses: p?.checkAddresses ?? true,
+  };
+}
+
+function toRequest(f: FormState): TraceRequest | string {
+  const txid = f.txid.trim();
+  if (!/^[0-9a-fA-F]{64}$/.test(txid)) return "Enter a transaction id: 64 characters, 0–9 and a–f.";
+  if (f.vout.trim() && f.to.trim()) return "Fill in either the output number or the recipient address, not both.";
+  if (f.vout.trim() && !/^\d+$/.test(f.vout.trim())) return "The output number must be a whole number (0, 1, 2…).";
+  const min = f.minBtc.trim() ? parseBtc(f.minBtc) : null;
+  if (f.minBtc.trim() && min === null) return "The minimum must be an amount in BTC, e.g. 0.01.";
+  const int = (s: string, d: number) => (/^\d+$/.test(s.trim()) ? Number(s.trim()) : d);
+  return {
+    txid,
+    vout: f.vout.trim() ? Number(f.vout.trim()) : null,
+    to: f.to.trim() || null,
+    direction: f.direction,
+    max_hops: int(f.maxHops, 8),
+    max_txs: int(f.maxTxs, 100),
+    min_sats: min !== null ? Number(min) : null,
+    check_addresses: f.checkAddresses,
+  };
+}
+
+export function TraceView({ params }: { params: TraceParams | null }) {
+  const [form, setForm] = useState<FormState>(() => fromParams(params));
+  const [view, setView] = useState<View | null>(null);
+  const [error, setError] = useState<unknown>(null);
+  const [running, setRunning] = useState(false);
+  const [progress, setProgress] = useState<TraceProgress | null>(null);
+  const [started, setStarted] = useState(0);
+  const [now, setNow] = useState(0);
+  const [selectedLead, setSelectedLead] = useState<number | null>(null);
+  const [selection, setSelection] = useState<Selection>(null);
+  const [hideBp, setHideBp] = useState(0);
+  const controls = useRef<GraphControls | null>(null);
+  const runId = useRef(0);
+
+  const run = useCallback(async (f: FormState) => {
+    const req = toRequest(f);
+    if (typeof req === "string") {
+      setError(new Error(req));
+      return;
+    }
+    // Keep a shareable link to this trace without re-running it on load.
+    history.replaceState(
+      null,
+      "",
+      href({
+        page: "trace",
+        params: {
+          txid: req.txid,
+          vout: req.vout ?? undefined,
+          to: req.to ?? undefined,
+          direction: req.direction,
+          maxHops: req.max_hops ?? undefined,
+          maxTxs: req.max_txs ?? undefined,
+          minBtc: f.minBtc.trim() || undefined,
+          checkAddresses: req.check_addresses ?? undefined,
+        },
+      }),
+    );
+    const id = ++runId.current;
+    setRunning(true);
+    setError(null);
+    setProgress(null);
+    setSelectedLead(null);
+    setSelection(null);
+    setStarted(Date.now());
+    const stop = await onTraceProgress((p) => id === runId.current && setProgress(p));
+    try {
+      const v = await call("btc_trace", req);
+      if (id !== runId.current) return;
+      setView(v);
+      setHideBp(0);
+      // Show the strongest result at once: the largest endpoint, else the largest branch.
+      const first = v.report.leads.findIndex((l) => l.kind.kind !== "unexplored");
+      setSelectedLead(first >= 0 ? first : v.report.leads.length > 0 ? 0 : null);
+    } catch (e) {
+      if (id === runId.current) setError(e);
+    } finally {
+      stop();
+      if (id === runId.current) setRunning(false);
+    }
+  }, []);
+
+  // Start immediately when opened from a "Trace…" link.
+  useEffect(() => {
+    const f = fromParams(params);
+    setForm(f);
+    if (params?.run) void run(f);
+  }, [params, run]);
+
+  useEffect(() => {
+    if (!running) return;
+    const t = setInterval(() => setNow(Date.now()), 500);
+    return () => clearInterval(t);
+  }, [running]);
+
+  const submit = (e: FormEvent) => {
+    e.preventDefault();
+    void run(form);
+  };
+  const set = <K extends keyof FormState>(k: K, v: FormState[K]) => setForm((f) => ({ ...f, [k]: v }));
+
+  const selectLead = (i: number) => {
+    setSelectedLead((cur) => (cur === i ? null : i));
+    setSelection(null);
+  };
+
+  return (
+    <div className="workspace">
+      <form className="trace-form" onSubmit={submit} aria-label="Trace settings">
+        <label className="field">
+          <span>Transaction id</span>
+          <input
+            name="txid"
+            value={form.txid}
+            onChange={(e) => set("txid", e.target.value)}
+            placeholder="64-character transaction id"
+            spellCheck={false}
+            autoComplete="off"
+          />
+        </label>
+        <label className="field">
+          <span>Output #</span>
+          <input className="narrow" value={form.vout} onChange={(e) => set("vout", e.target.value)} inputMode="numeric" placeholder="all" />
+        </label>
+        <label className="field">
+          <span>or paid to address</span>
+          <input
+            value={form.to}
+            onChange={(e) => set("to", e.target.value)}
+            placeholder="optional"
+            spellCheck={false}
+            style={{ width: "22ch", fontFamily: "var(--mono)", fontSize: "0.85rem" }}
+          />
+        </label>
+        <div className="field">
+          <span>Direction</span>
+          <div className="segmented" role="group" aria-label="Direction">
+            <button type="button" aria-pressed={form.direction === "forward"} onClick={() => set("direction", "forward")}>
+              Where did it go?
+            </button>
+            <button type="button" aria-pressed={form.direction === "backward"} onClick={() => set("direction", "backward")}>
+              Where did it come from?
+            </button>
+          </div>
+        </div>
+        <button type="submit" className="btn primary" disabled={running}>
+          {running ? "Tracing…" : "Trace"}
+        </button>
+        <details>
+          <summary>Limits and options</summary>
+          <div className="more">
+            <label className="field">
+              <span>Max hops</span>
+              <input className="narrow" value={form.maxHops} onChange={(e) => set("maxHops", e.target.value)} inputMode="numeric" />
+            </label>
+            <label className="field">
+              <span>Max transactions to fetch</span>
+              <input className="narrow" value={form.maxTxs} onChange={(e) => set("maxTxs", e.target.value)} inputMode="numeric" />
+            </label>
+            <label className="field">
+              <span>Ignore branches under (BTC)</span>
+              <input value={form.minBtc} onChange={(e) => set("minBtc", e.target.value)} placeholder="0.1% of the amount" style={{ width: "16ch" }} />
+            </label>
+            <label className="check">
+              <input type="checkbox" checked={form.checkAddresses} onChange={(e) => set("checkAddresses", e.target.checked)} />
+              <span>
+                Check address activity
+                <br />
+                <span className="muted small">Detects busy exchange and service wallets. Slower on first run.</span>
+              </span>
+            </label>
+          </div>
+        </details>
+      </form>
+
+      <div className="board">
+        <div className="canvas-wrap">
+          {view && !running && (
+            <>
+              <GraphCanvas
+                view={view}
+                selectedLead={selectedLead}
+                selected={selection}
+                hideBelowBp={hideBp}
+                onSelect={(s) => {
+                  setSelection(s);
+                  if (s?.type === "node") {
+                    const n = view.graph.nodes.find((x) => x.id === s.id);
+                    setSelectedLead(n?.lead ? n.lead.index : null);
+                  }
+                }}
+                controls={controls}
+              />
+              <Legend view={view} />
+              <div className="canvas-tools" role="toolbar" aria-label="Graph tools">
+                <label title="Hide flows smaller than this share of the traced amount">
+                  Hide under {(hideBp / 100).toFixed(hideBp < 100 ? 2 : 0)}%
+                  <input type="range" min={0} max={1000} step={10} value={hideBp} onChange={(e) => setHideBp(Number(e.target.value))} />
+                </label>
+                <button type="button" className="btn subtle" onClick={() => controls.current?.fit()}>
+                  Fit
+                </button>
+                <button type="button" className="btn subtle" onClick={() => controls.current?.relayout()}>
+                  Re-arrange
+                </button>
+              </div>
+            </>
+          )}
+          {!view && !running && (
+            <div className="canvas-empty">
+              <div>
+                <h2>Follow a payment</h2>
+                <p>
+                  Enter a transaction id above. To follow one payment, add the output number or the address it paid.
+                  ChainTrail follows the money until it reaches an exchange, a mixer or another service, or until the
+                  limits you set.
+                </p>
+                <ErrorBox error={error} />
+              </div>
+            </div>
+          )}
+          {running && (
+            <div className="canvas-empty">
+              <div className="progress" role="status" aria-live="polite">
+                <div className="track" />
+                <strong>Following the funds… {formatElapsed(now - started)}</strong>
+                <span className="muted small">
+                  {progress
+                    ? `${plural(progress.txs_examined, "transaction")} examined, ${plural(progress.pending, "branch", "branches")} queued, ${plural(progress.leads, "lead")} so far`
+                    : isDesktop
+                      ? "Starting…"
+                      : "The first trace of a transaction can take a minute; repeat traces are instant."}
+                </span>
+              </div>
+            </div>
+          )}
+        </div>
+
+        <aside className="side" aria-label="Results">
+          <div className="side-scroll">
+            {view && !running ? (
+              <>
+                {error ? <ErrorBox error={error} /> : null}
+                <DetailsPanel
+                  view={view}
+                  selection={selection}
+                  selectedLead={selection ? null : selectedLead}
+                  onClose={() => {
+                    setSelection(null);
+                    setSelectedLead(null);
+                  }}
+                />
+                <LeadsPanel view={view} selectedLead={selectedLead} onSelectLead={selectLead} />
+                <div className="callout">
+                  Leads are leads, not proof. Anything inferred or taken from a label is marked as such; check it
+                  before acting on it.
+                </div>
+                <div className="actions">
+                  <button type="button" className="btn" onClick={() => exportJson(view)}>
+                    Save report (JSON)
+                  </button>
+                  <button type="button" className="btn" onClick={() => exportCsv(view)}>
+                    Save leads (CSV)
+                  </button>
+                  <button
+                    type="button"
+                    className="btn"
+                    onClick={() => {
+                      const png = controls.current?.png();
+                      if (png) exportPng(view, png);
+                    }}
+                  >
+                    Save graph (PNG)
+                  </button>
+                </div>
+              </>
+            ) : (
+              <p className="muted small">Results appear here: where the funds went, how much, and how sure we are.</p>
+            )}
+          </div>
+        </aside>
+      </div>
+    </div>
+  );
+}
