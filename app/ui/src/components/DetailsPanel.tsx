@@ -90,10 +90,10 @@ function GroupDetails({
         {chain ? (
           <>
             The funds passed through these unlabelled addresses one after another; they are drawn as one step to keep the
-            graph readable. {formatBtcShort(g.amount)} BTC entered the first
-            {g.amountOut < g.amount
-              ? ` and ${formatBtcShort(g.amountOut)} BTC continued from the last. The other ${formatBtcShort(g.amount - g.amountOut)} BTC left in smaller branches (hidden at the current setting) or went to transaction fees.`
-              : "."}
+            graph readable. {formatBtcShort(g.amount)} BTC entered the first and {formatBtcShort(g.amountOut)} BTC
+            continued from the last.
+            {g.amountOut < g.amount &&
+              ` The other ${formatBtcShort(g.amount - g.amountOut)} BTC left in smaller branches (hidden at the current setting) or went to transaction fees.`}
           </>
         ) : (
           "These branches are drawn as one point to keep the graph readable. Each is still listed with the leads."
@@ -124,7 +124,7 @@ export function DetailsPanel(props: Parameters<typeof DetailsBody>[0]) {
   useEffect(() => {
     if (!selection) return;
     const reduce = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
-    ref.current?.scrollIntoView?.({ block: "nearest", behavior: reduce ? "auto" : "smooth" });
+    ref.current?.scrollIntoView?.({ block: "start", behavior: reduce ? "auto" : "smooth" });
   }, [selection]);
   return (
     <div ref={ref} className="details-anchor">

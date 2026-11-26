@@ -41,7 +41,11 @@ describe.each(views)("display graph: %s", (_, view) => {
   });
 
   it("accounts for every report node (drawn, grouped or hidden)", () => {
-    expect(d.nodeOf.size + d.hidden).toBe(d.total);
+    expect(d.nodeOf.size + d.hidden + d.unlinked).toBe(d.total);
+  });
+
+  it("links every report node to the start", () => {
+    expect(d.unlinked).toBe(0);
   });
 
   it("stays small enough to read", () => {

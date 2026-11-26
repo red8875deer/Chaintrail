@@ -1028,3 +1028,52 @@ async fn graph_of_one_output_has_no_extra_root() {
     assert_eq!(seeds.len(), 1);
     assert_eq!(seeds[0].id, addr(2).to_string());
 }
+
+#[tokio::test]
+async fn graph_follows_funds_through_an_output_without_an_address() {
+    use ct_core::ScriptType;
+    use ct_trace::graph::build;
+    // tx 2 pays a P2PK output (no address), which tx 3 spends to addr 4.
+    let mut t2 = tx(
+        &txid(2),
+        101,
+        &[(&txid(1), 0, &addr(2), BTC)],
+        &[(&addr(3), BTC - 10_000)],
+    );
+    t2.outputs[0].address = None;
+    t2.outputs[0].script_type = ScriptType::P2pk;
+    let mut t3 = tx(
+        &txid(3),
+        102,
+        &[(&txid(2), 0, &addr(3), BTC - 10_000)],
+        &[(&addr(4), BTC - 20_000)],
+    );
+    t3.inputs[0].address = None;
+    t3.inputs[0].script_type = Some(ScriptType::P2pk);
+    let p = MemoryBitcoin::new([victim_payment(), t2, t3]);
+    let r = run(
+        &p,
+        Seed::Payment {
+            txid: txid(1),
+            address: addr(2),
+        },
+        forward(),
+    )
+    .await;
+    let g = build(&r);
+    // One node for the addressless coin, with the funds going in and out of it.
+    let coin = format!("noaddr:{}:0", txid(2));
+    assert!(g.edges.iter().any(|e| e.target == coin), "{:#?}", g.edges);
+    assert!(
+        g.edges
+            .iter()
+            .any(|e| e.source == coin && e.target == addr(4).to_string())
+    );
+    assert_eq!(
+        g.nodes
+            .iter()
+            .filter(|n| n.id.starts_with("noaddr:"))
+            .count(),
+        1
+    );
+}

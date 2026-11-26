@@ -50,6 +50,7 @@ Dates are not committed; quality is.
 - [x] Selected lead's path highlighted; details explain every claim in plain words
 - [x] Readable large graphs: small flows hidden (adaptive, with notice), branches grouped, chains collapsed, parallel transfers combined, mid-edge arrows, stable layout, readable opening zoom (ADR-0011)
 - [x] All-outputs traces start from the traced transaction (exact amount to each output)
+- [x] Funds followed through outputs without an address (P2PK): flows record their coins (`from_coin`, `to_coin`)
 - [x] Exports: report JSON, leads CSV, graph PNG
 - [x] Mock mode with recorded data; UI unit tests; browser checks with Playwright
 - [x] Release workflow for Windows / macOS / Linux installers (unsigned for now)

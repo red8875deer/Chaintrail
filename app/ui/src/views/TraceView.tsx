@@ -298,11 +298,13 @@ export function TraceView({ params }: { params: TraceParams | null }) {
                 />
               )}
               <Legend view={view} />
-              {display && !noteClosed && (display.hidden > 0 || display.groups.size > 0) && (
+              {display && !noteClosed && (display.hidden > 0 || display.unlinked > 0 || display.groups.size > 0) && (
                 <div className="view-note" role="status">
                   <p>
                     Showing {formatInt(display.shown)} of {formatInt(display.total)} addresses
-                    {display.hidden > 0 && `; ${formatInt(display.hidden)} with smaller flows are hidden (slider below)`}.
+                    {display.hidden > 0 &&
+                      `; ${formatInt(display.hidden)} with smaller flows ${display.hidden === 1 ? "is" : "are"} hidden (slider below)`}
+                    {display.unlinked > 0 && `; ${formatInt(display.unlinked)} not linked to the start`}.
                     {display.groups.size > 0 && " Groups and runs of addresses open on click."} Every lead is listed on the right.
                   </p>
                   <button type="button" className="note-close" aria-label="Close this note" onClick={() => setNoteClosed(true)}>

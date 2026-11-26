@@ -109,6 +109,12 @@ pub struct Flow {
     pub time: Option<u64>,
     pub from: Option<Address>,
     pub to: Option<Address>,
+    /// The coins (`txid:vout`) the funds moved from and to, so outputs without an address
+    /// (P2PK, bare multisig) can be followed from one transfer to the next.
+    #[serde(default)]
+    pub from_coin: Option<String>,
+    #[serde(default)]
+    pub to_coin: Option<String>,
     /// Traced amount on this edge (not the full output value), base units.
     pub amount: u64,
     pub role: FlowRole,

@@ -147,11 +147,15 @@ pub async fn trace_bitcoin(
         }
         Direction::Backward => {
             let receiver = seed_outputs.first().and_then(|(_, a, _)| a.clone());
+            let receiver_coin = seed_outputs
+                .first()
+                .map(|(vout, _, _)| format!("{}:{vout}", seed_tx.txid));
             let source = Source {
                 txid: seed_tx.txid.clone(),
                 amount: seed_amount,
                 hop: 0,
                 receiver,
+                receiver_coin,
                 path: vec![seed_tx.txid.clone()],
             };
             t.backward(vec![source], min_amount, progress).await;
@@ -195,6 +199,8 @@ struct Source {
     hop: u32,
     /// Address that received the traced funds in `txid`.
     receiver: Option<Address>,
+    /// The output (`txid:vout`) that received them.
+    receiver_coin: Option<String>,
     path: Vec<String>,
 }
 
@@ -781,6 +787,8 @@ impl<'a> Tracer<'a> {
                     time,
                     from: coin.address.clone(),
                     to: o.address.clone(),
+                    from_coin: Some(format!("{}:{}", coin.txid, coin.vout)),
+                    to_coin: Some(format!("{}:{}", stx.txid, o.index)),
                     amount: share,
                     role,
                     peel,
@@ -998,6 +1006,8 @@ impl<'a> Tracer<'a> {
                     time,
                     from: input.address.clone(),
                     to: src.receiver.clone(),
+                    from_coin: Some(format!("{prev_txid}:{}", input.prev_vout)),
+                    to_coin: src.receiver_coin.clone(),
                     amount: share,
                     role: FlowRole::Source,
                     peel: false,
@@ -1025,6 +1035,7 @@ impl<'a> Tracer<'a> {
                 push(
                     &mut pending,
                     Source {
+                        receiver_coin: Some(format!("{prev_txid}:{}", input.prev_vout)),
                         txid: prev_txid,
                         amount: share,
                         hop: src.hop + 1,

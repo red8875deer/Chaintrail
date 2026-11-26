@@ -191,6 +191,8 @@ export interface Display {
   groups: Map<string, DisplayGroup>;
   /** Report nodes not drawn because their flows are below the threshold. */
   hidden: number;
+  /** Report nodes not linked to the start by any flow (cannot be drawn at any setting). */
+  unlinked: number;
   /** Report nodes drawn individually. */
   shown: number;
   total: number;
@@ -232,6 +234,18 @@ export function buildDisplay(view: TraceView, o: DisplayOptions): Display {
     }
   }
   const edges = kept.filter((e) => visible.has(e.source) && visible.has(e.target));
+  // Nodes no flow links to the start, whatever the threshold (should not happen; counted
+  // apart so the notice never blames the slider for them).
+  const linked = new Set(view.graph.nodes.filter((n) => n.seed).map((n) => n.id));
+  for (let grew = true; grew; ) {
+    grew = false;
+    for (const e of view.graph.edges) {
+      if (linked.has(toward(e)) && !linked.has(away(e))) {
+        linked.add(away(e));
+        grew = true;
+      }
+    }
+  }
 
   // Children (away from the seed) and parents, ignoring self-transfers.
   const children = new Map<string, GraphEdge[]>();
@@ -414,6 +428,8 @@ export function buildDisplay(view: TraceView, o: DisplayOptions): Display {
         peel ? "peel" : "",
         loop ? "loop" : "",
         minor ? "minor" : "",
+        !loop && fanIn ? "fan-in" : "",
+        !loop && fanOut ? "fan-out" : "",
         !minor && !loop && fanIn ? "lbl-src" : "",
         !minor && !loop && fanOut ? "lbl-tgt" : "",
       ]
@@ -434,7 +450,8 @@ export function buildDisplay(view: TraceView, o: DisplayOptions): Display {
     nodeOf,
     edgeOf,
     groups,
-    hidden: view.graph.nodes.length - visible.size,
+    hidden: view.graph.nodes.filter((n) => !visible.has(n.id) && linked.has(n.id)).length,
+    unlinked: view.graph.nodes.filter((n) => !visible.has(n.id) && !linked.has(n.id)).length,
     shown,
     total: view.graph.nodes.length,
   };
@@ -509,6 +526,8 @@ export function graphStyle(p: Palette): StylesheetJsonBlock[] {
     },
     { selector: "node.unexplored", style: { "border-style": "dotted", "background-opacity": 0.35, "border-color": p.muted } },
     { selector: "node.seed", style: { "border-width": 3, "border-color": p.amber } },
+    // Long names (chains, transactions) may use a wider label.
+    { selector: "node.chain, node.transaction, node.group", style: { "text-max-width": "190px" } },
     // Groups look stacked (double outline); chains are pills. Both expand on click.
     { selector: "node.group", style: { "border-style": "double", "border-width": 6, "border-color": p.muted } },
     {
@@ -558,9 +577,30 @@ export function graphStyle(p: Palette): StylesheetJsonBlock[] {
         "transition-duration": 150,
       },
     },
-    // Fan-in: amount by each source. Fan-out: amount by each target.
-    { selector: "edge.lbl-src", style: { label: "", "source-label": "data(label)" } },
-    { selector: "edge.lbl-tgt", style: { label: "", "target-label": "data(label)" } },
+    // Fans (3+ edges meeting at one node) are drawn as a comb: one trunk and a straight stub
+    // per branch, so no line runs diagonally through the other branches' labels. The amount
+    // sits on each branch's own stub (by each source of a fan-in, each target of a fan-out).
+    {
+      selector: "edge.fan-in, edge.fan-out",
+      style: {
+        "curve-style": "taxi",
+        "taxi-direction": "horizontal",
+        "taxi-turn-min-distance": 4,
+        "target-arrow-shape": "triangle",
+        "target-arrow-color": p.trail,
+        "mid-target-arrow-shape": "none",
+      },
+    },
+    { selector: "edge.fan-in", style: { "taxi-turn": "112px" } },
+    { selector: "edge.fan-out", style: { "taxi-turn": "-112px" } },
+    {
+      selector: "edge.lbl-src",
+      style: { label: "", "source-label": "data(label)", "source-text-offset": 50, "source-text-rotation": "none" },
+    },
+    {
+      selector: "edge.lbl-tgt",
+      style: { label: "", "target-label": "data(label)", "target-text-offset": 56, "target-text-rotation": "none" },
+    },
     { selector: "edge.change", style: { "line-style": "dashed", "line-dash-pattern": [7, 4] } },
     // Self-transfers loop over the top: arrows arrive from the left, labels sit below.
     { selector: "edge.loop", style: { label: "", "loop-direction": "0deg", "loop-sweep": "-50deg", "text-margin-y": -14 } },
@@ -568,10 +608,24 @@ export function graphStyle(p: Palette): StylesheetJsonBlock[] {
     { selector: "edge.minor", style: { label: "" } },
     // Amounts on the selected lead's route are always shown.
     { selector: "edge.minor.hover, edge.minor.path, edge.minor:selected", style: { label: "data(label)" } },
+    {
+      selector: "edge.minor.fan-in.hover, edge.minor.fan-in.path, edge.minor.fan-in:selected",
+      style: { label: "", "source-label": "data(label)", "source-text-offset": 50, "source-text-rotation": "none" },
+    },
+    {
+      selector: "edge.minor.fan-out.hover, edge.minor.fan-out.path, edge.minor.fan-out:selected",
+      style: { label: "", "target-label": "data(label)", "target-text-offset": 56, "target-text-rotation": "none" },
+    },
     { selector: ".dim", style: { opacity: 0.22 } },
     {
       selector: "edge.path",
-      style: { "line-color": p.amber, "mid-target-arrow-color": p.amber, opacity: 1, "z-index": 10 },
+      style: {
+        "line-color": p.amber,
+        "mid-target-arrow-color": p.amber,
+        "target-arrow-color": p.amber,
+        opacity: 1,
+        "z-index": 10,
+      },
     },
     { selector: "node.path", style: { "border-color": p.amber, "border-width": 4, opacity: 1, "z-index": 10 } },
     { selector: "edge.hover", style: { opacity: 1, "z-index": 20 } },

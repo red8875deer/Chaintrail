@@ -27,15 +27,18 @@ from it by pure, unit-tested functions (`app/ui/src/lib/graph.ts`, `buildDisplay
   its main route (at each step the largest transfer on its path) whatever the settings, and
   the route stays revealed. Its addresses are never hidden or grouped; plain pass-through
   runs on it may stay collapsed (highlighted). Tiny side transfers of the same transactions
-  are not added. The graph is laid out again only when the drawn nodes change; edge and
-  label changes are applied in place. The leads list and exports always contain every lead.
+  are not added. The graph is laid out again only when the set of drawn nodes changes;
+  edge and label changes are applied in place. The leads list and exports always contain every lead.
 - **Readable by default:** open at a zoom where labels are about 10 px (fonts 13/12 px, zoom
   ≥ 0.8). If the route does not fit, show as much of it as fits with the lead on screen.
   "Fit" gives an overview (labels too small to read are then left out). Small flows in busy
   graphs have no permanent label (hover shows it); amounts on the selected route always show.
-- **No piled-up arrows or amounts:** arrows sit mid-edge (never under a node's label, never
-  stacked where edges meet). Where 3+ edges meet at one node, amounts sit at the other end
-  (by each source of a fan-in, by each target of a fan-out).
+- **No piled-up arrows or amounts, no lines through labels:** arrows sit mid-edge (never
+  under a node's label). Where 3+ edges meet at one node they are drawn as a comb (one
+  trunk, a horizontal stub per branch) with each amount on its own stub. Any other edge
+  that would cross a node or a label is bent around it. When nodes are added or removed
+  the layout is recomputed and nodes glide to their new places (no jump; none with
+  reduced motion).
 - **All-outputs traces start from the transaction.** The report lists the traced outputs
   (`seed_outputs`); when they go to several addresses, the graph's start point is the
   transaction itself, with an exact-amount edge to each followed output, so outputs that are

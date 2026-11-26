@@ -254,6 +254,9 @@ export interface Flow {
   time: number | null;
   from: Address | null;
   to: Address | null;
+  /** Coins (txid:vout) the funds moved from and to; links outputs without an address. */
+  from_coin: string | null;
+  to_coin: string | null;
   amount: number;
   role: FlowRole;
   peel: boolean;
