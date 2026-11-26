@@ -24,3 +24,8 @@ ct-trace = { path = "../../crates/ct-trace" }
 lto = "thin"
 codegen-units = 4
 strip = true
+
+[features]
+# Serve the built UI from the app bundle instead of the dev server (`tauri build` turns this
+# on; use `cargo build --release --features custom-protocol` to do it by hand).
+custom-protocol = ["tauri/custom-protocol"]
