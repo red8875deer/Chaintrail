@@ -27,8 +27,10 @@ from it by pure, unit-tested functions (`app/ui/src/lib/graph.ts`, `buildDisplay
   its main route (at each step the largest transfer on its path) whatever the settings, and
   the route stays revealed. Its addresses are never hidden or grouped; plain pass-through
   runs on it may stay collapsed (highlighted). Tiny side transfers of the same transactions
-  are not added. The graph is laid out again only when the set of drawn nodes changes;
-  edge and label changes are applied in place. The leads list and exports always contain every lead.
+  are not added. Revealing a route places its new nodes next to what is drawn (one column
+  from the node that sends them funds, in the nearest free slot) and moves nothing else;
+  only large changes (slider, grouping, opening a big group) re-run the layout. Edge and
+  label changes are applied in place. "Reset layout" gives the full layout on demand. The leads list and exports always contain every lead.
 - **Readable by default:** open at a zoom where labels are about 10 px (fonts 13/12 px, zoom
   ≥ 0.8). If the route does not fit, show as much of it as fits with the lead on screen.
   "Fit" gives an overview (labels too small to read are then left out). Small flows in busy

@@ -202,6 +202,71 @@ function routeAroundNodes(cy: Core) {
   });
 }
 
+/** Small changes (e.g. revealing a lead's route, which may also dissolve a small group) are
+ * placed into the existing layout; larger ones (slider, grouping, "Show all") re-run it. */
+const MAX_PLACED = 24;
+const MAX_REMOVED = 6;
+
+/**
+ * Place new nodes into an existing left-to-right layout without moving anything else: each
+ * goes one column after the drawn node that sends it funds (or before the one it sends
+ * funds to), in the nearest free slot above or below.
+ */
+function placeNear(cy: Core, added: cytoscape.NodeCollection) {
+  type Box = { x1: number; y1: number; x2: number; y2: number };
+  const box = (n: cytoscape.NodeSingular, at?: Position): Box => {
+    const b = n.boundingBox({ includeLabels: true, includeOverlays: false });
+    if (!at) return b;
+    const p = n.position();
+    return { x1: b.x1 + at.x - p.x, x2: b.x2 + at.x - p.x, y1: b.y1 + at.y - p.y, y2: b.y2 + at.y - p.y };
+  };
+  const overlaps = (a: Box, b: Box, m = 14) => a.x1 < b.x2 + m && b.x1 < a.x2 + m && a.y1 < b.y2 + m && b.y1 < a.y2 + m;
+  const pending = new Set(added.map((n) => n.id()));
+  const placed = cy.nodes().filter((n) => !pending.has(n.id())) as unknown as cytoscape.NodeCollection;
+  const boxes: Box[] = placed.map((n) => box(n));
+  // Column spacing and step as the layout made them.
+  const xs = [...new Set(placed.map((n) => Math.round(n.position().x)))].sort((a, b) => a - b);
+  const gaps = xs.slice(1).map((x, i) => x - xs[i]!).filter((g) => g > 40).sort((a, b) => a - b);
+  const colGap = gaps.length ? gaps[Math.floor(gaps.length / 2)]! : 260;
+  const snap = (x: number) => {
+    const near = xs.find((c) => Math.abs(c - x) < colGap / 3);
+    return near ?? x;
+  };
+  for (let guard = 0; pending.size > 0 && guard < 200; guard++) {
+    let progress = false;
+    for (const id of [...pending]) {
+      const n = cy.getElementById(id) as cytoscape.NodeSingular;
+      const from = n.incomers("node").filter((m) => !pending.has(m.id()));
+      const to = n.outgoers("node").filter((m) => !pending.has(m.id()));
+      if (from.empty() && to.empty()) continue;
+      const anchor = (from.nonempty() ? from[0] : to[0]) as cytoscape.NodeSingular;
+      const a = anchor.position();
+      const x = snap(from.nonempty() ? a.x + colGap : a.x - colGap);
+      const step = Math.max(40, box(n).y2 - box(n).y1 + 16);
+      let y = a.y;
+      for (let k = 0; k < 60; k++) {
+        const cand = a.y + (k % 2 === 0 ? 1 : -1) * Math.ceil(k / 2) * step;
+        if (!boxes.some((b) => overlaps(box(n, { x, y: cand }), b))) {
+          y = cand;
+          break;
+        }
+      }
+      n.position({ x, y });
+      boxes.push(box(n));
+      pending.delete(id);
+      progress = true;
+    }
+    if (!progress) break;
+  }
+  // Anything not connected to a drawn node: below everything.
+  let bottom = Math.max(...boxes.map((b) => b.y2), 0);
+  for (const id of pending) {
+    const n = cy.getElementById(id) as cytoscape.NodeSingular;
+    bottom += 80;
+    n.position({ x: xs[0] ?? 0, y: bottom });
+  }
+}
+
 /** Move nodes from `from` to where they are now, smoothly (or not at all if reduced motion). */
 function glide(cy: Core, from: Map<string, Position>) {
   if (reducedMotion()) return;
@@ -323,7 +388,18 @@ export function GraphCanvas({
         }
       }
     });
-    if (nodesChanged) {
+    const added = cy.nodes().filter((n) => !before.has(n.id()));
+    const removed = [...before.keys()].filter((id) => cy.getElementById(id).empty()).length;
+    if (nodesChanged && !first && removed <= MAX_REMOVED && added.length <= MAX_PLACED) {
+      // A few nodes revealed (e.g. the route to a selected lead): place them next to what is
+      // already drawn and move nothing else. "Reset layout" gives the full layout again.
+      placeNear(cy, added);
+      added.forEach((n) => {
+        const old = n.neighborhood("node").filter((m) => before.has(m.id())).first();
+        if (old.nonempty()) before.set(n.id(), before.get(old.id())!);
+      });
+      glideFrom.current = before;
+    } else if (nodesChanged) {
       cy.layout(LAYOUT as unknown as cytoscape.LayoutOptions).run();
       // New nodes appear from a neighbour that was already drawn.
       cy.nodes().forEach((n) => {
