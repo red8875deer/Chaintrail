@@ -27,7 +27,8 @@ export interface GraphControls {
 /** Below this zoom the labels (12–13px) render under ~10px; never open smaller than this.
  * "Fit" can still show the whole graph as an overview. */
 const MIN_READABLE_ZOOM = 0.8;
-const MAX_FIT_ZOOM = 1.4;
+/** Small graphs are not blown up: more context, steadier text size between traces. */
+const MAX_FIT_ZOOM = 1.15;
 /** Room around the graph; more at the top (notice) and bottom (toolbar, legend). */
 const PAD = { top: 104, bottom: 96, left: 48, right: 48 };
 const MOVE_MS = 350;
@@ -106,15 +107,38 @@ function view(cy: Core, eles: Eles, focus: Eles | null, animate: boolean, overvi
 function routeAroundNodes(cy: Core) {
   type Box = { x1: number; y1: number; x2: number; y2: number };
   const grow = (b: Box, d: number): Box => ({ x1: b.x1 - d, y1: b.y1 - d, x2: b.x2 + d, y2: b.y2 + d });
-  const bodies = new Map<string, Box>();
-  const labels = new Map<string, Box>();
-  cy.nodes().forEach((n) => {
-    bodies.set(n.id(), grow(n.boundingBox({ includeLabels: true, includeOverlays: false }), 8));
-    labels.set(n.id(), grow(n.boundingBox({ includeNodes: false, includeLabels: true, includeOverlays: false }), 4));
-  });
   const inside = (p: Position, b: Box) => p.x > b.x1 && p.x < b.x2 && p.y > b.y1 && p.y < b.y2;
   const overlaps = (a: Box, b: Box) => a.x1 < b.x2 && b.x1 < a.x2 && a.y1 < b.y2 && b.y1 < a.y2;
-  const placed: Box[] = [];
+
+  // Spatial grid: each check looks only at boxes near it (large graphs froze for seconds).
+  const CELL = 160;
+  class Grid<T> {
+    private cells = new Map<string, { box: Box; item: T }[]>();
+    add(box: Box, item: T) {
+      for (let x = Math.floor(box.x1 / CELL); x <= Math.floor(box.x2 / CELL); x++)
+        for (let y = Math.floor(box.y1 / CELL); y <= Math.floor(box.y2 / CELL); y++) {
+          const k = `${x},${y}`;
+          (this.cells.get(k) ?? this.cells.set(k, []).get(k)!).push({ box, item });
+        }
+    }
+    at(p: Position) {
+      return this.cells.get(`${Math.floor(p.x / CELL)},${Math.floor(p.y / CELL)}`) ?? [];
+    }
+    within(box: Box) {
+      const out: { box: Box; item: T }[] = [];
+      for (let x = Math.floor(box.x1 / CELL); x <= Math.floor(box.x2 / CELL); x++)
+        for (let y = Math.floor(box.y1 / CELL); y <= Math.floor(box.y2 / CELL); y++)
+          for (const e of this.cells.get(`${x},${y}`) ?? []) if (overlaps(e.box, box)) out.push(e);
+      return out;
+    }
+  }
+  const bodies = new Grid<string>();
+  const labels = new Map<string, Box>();
+  cy.nodes().forEach((n) => {
+    bodies.add(grow(n.boundingBox({ includeLabels: true, includeOverlays: false }), 8), n.id());
+    labels.set(n.id(), grow(n.boundingBox({ includeNodes: false, includeLabels: true, includeOverlays: false }), 4));
+  });
+  const placed = new Grid<null>();
 
   /** Where the edge's amount would be drawn (rotated with the line, lifted above it). */
   const labelBox = (e: EdgeSingular, ctrl: Position | null): Box | null => {
@@ -136,10 +160,11 @@ function routeAroundNodes(cy: Core) {
     const s = e.source().position();
     const t = e.target().position();
     const own = [e.source().id(), e.target().id()];
+    const ownLabels = own.map((id) => labels.get(id)!).filter(Boolean);
     const lb = labelBox(e, ctrl);
     if (lb) {
-      for (const [id, b] of bodies) if (!own.includes(id) && overlaps(lb, b)) return true;
-      for (const b of placed) if (overlaps(lb, b)) return true;
+      if (bodies.within(lb).some((b) => !own.includes(b.item))) return true;
+      if (placed.within(lb).length > 0) return true;
     }
     for (let k = 3; k <= 57; k++) {
       const u = k / 60;
@@ -149,14 +174,9 @@ function routeAroundNodes(cy: Core) {
             y: (1 - u) * (1 - u) * s.y + 2 * (1 - u) * u * ctrl.y + u * u * t.y,
           }
         : { x: s.x + (t.x - s.x) * u, y: s.y + (t.y - s.y) * u };
-      for (const [id, b] of bodies) {
-        if (own.includes(id)) {
-          // An edge may touch its own nodes, but not run through their labels.
-          if (inside(p, labels.get(id)!)) return true;
-        } else if (inside(p, b)) {
-          return true;
-        }
-      }
+      // An edge may touch its own nodes, but not run through their labels.
+      if (ownLabels.some((b) => inside(p, b))) return true;
+      if (bodies.at(p).some((b) => !own.includes(b.item) && inside(p, b.box))) return true;
     }
     return false;
   };
@@ -169,13 +189,12 @@ function routeAroundNodes(cy: Core) {
   edges.forEach((e) => {
     if (e.isLoop() || e.hasClass("fan-in") || e.hasClass("fan-out")) {
       const b = e.boundingBox({ includeNodes: false, includeEdges: false, includeLabels: true, includeOverlays: false });
-      if (b.w > 1 && b.h > 1) placed.push(b);
+      if (b.w > 1 && b.h > 1) placed.add(b, null);
     }
   });
   edges.forEach((e) => {
     if (e.isLoop() || e.hasClass("fan-in") || e.hasClass("fan-out")) return;
     let ctrl: Position | null = null;
-    let d = 0;
     if (blocked(e, null)) {
       const s = e.source().position();
       const t = e.target().position();
@@ -187,18 +206,15 @@ function routeAroundNodes(cy: Core) {
         const p = { x: mid.x + nx * c, y: mid.y + ny * c };
         if (!blocked(e, p)) {
           ctrl = p;
-          d = c;
+          // Same sign convention as Cytoscape: distance along the left-hand normal of
+          // source→target (checked in the browser).
+          e.style({ "curve-style": "unbundled-bezier", "control-point-distances": c, "control-point-weights": 0.5 });
           break;
         }
       }
-      if (ctrl) {
-        // Same sign convention as Cytoscape: distance along the left-hand normal of
-        // source→target (checked in the browser).
-        e.style({ "curve-style": "unbundled-bezier", "control-point-distances": d, "control-point-weights": 0.5 });
-      }
     }
     const lb = labelBox(e, ctrl);
-    if (lb) placed.push(lb);
+    if (lb) placed.add(lb, null);
   });
 }
 

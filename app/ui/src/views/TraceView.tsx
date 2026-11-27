@@ -92,6 +92,14 @@ export function TraceView({ params }: { params: TraceParams | null }) {
   const [selectedLead, setSelectedLead] = useState<number | null>(null);
   const [selection, setSelection] = useState<Selection>(null);
   const [hideBp, setHideBp] = useState(0);
+  // The slider moves freely; the graph follows once it settles (each change re-lays out).
+  const [sliderBp, setSliderBp] = useState(0);
+  useEffect(() => setSliderBp(hideBp), [hideBp]);
+  useEffect(() => {
+    if (sliderBp === hideBp) return;
+    const t = setTimeout(() => setHideBp(sliderBp), 250);
+    return () => clearTimeout(t);
+  }, [sliderBp, hideBp]);
   const [simplify, setSimplify] = useState(true);
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
   const [noteClosed, setNoteClosed] = useState(false);
@@ -355,6 +363,8 @@ export function TraceView({ params }: { params: TraceParams | null }) {
                 <div className="view-note" role="status">
                   <p>
                     Showing {formatInt(display.shown)} of {formatInt(display.total)} addresses
+                    {display.total - display.shown - display.hidden - display.unlinked > 0 &&
+                      ` (and ${formatInt(display.total - display.shown - display.hidden - display.unlinked)} more inside groups and runs)`}
                     {display.hidden > 0 &&
                       `; ${formatInt(display.hidden)} with smaller flows ${display.hidden === 1 ? "is" : "are"} hidden (slider below)`}
                     {display.unlinked > 0 && `; ${formatInt(display.unlinked)} not linked to the start`}.
@@ -367,8 +377,16 @@ export function TraceView({ params }: { params: TraceParams | null }) {
               )}
               <div className="canvas-tools" role="toolbar" aria-label="Graph tools">
                 <label title="Hide flows smaller than this share of the traced amount">
-                  Hide flows under {(hideBp / 100).toFixed(hideBp % 100 ? 1 : 0)}%
-                  <input type="range" min={0} max={1000} step={10} value={hideBp} onChange={(e) => setHideBp(Number(e.target.value))} />
+                  Hide flows under {(sliderBp / 100).toFixed(sliderBp % 100 ? 1 : 0)}%
+                  <input
+                    type="range"
+                    min={0}
+                    max={1000}
+                    step={10}
+                    value={sliderBp}
+                    aria-valuetext={`${(sliderBp / 100).toFixed(sliderBp % 100 ? 1 : 0)} percent of the traced amount`}
+                    onChange={(e) => setSliderBp(Number(e.target.value))}
+                  />
                 </label>
                 <label title="Group many small branches and collapse long runs of plain addresses">
                   <input type="checkbox" checked={simplify} onChange={(e) => setSimplify(e.target.checked)} />

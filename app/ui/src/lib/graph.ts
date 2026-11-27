@@ -17,7 +17,7 @@
 
 import type { ElementDefinition, StylesheetJsonBlock } from "cytoscape";
 import type { GraphEdge, GraphNode, TraceView } from "../api/types";
-import { formatBtcShort, shareBasisPoints } from "./format";
+import { formatBtcShort, shareBasisPoints, shortId } from "./format";
 import { NODE_STYLES, type NodeStyleKey, nodeStyleKey } from "./meaning";
 
 export interface Palette {
@@ -86,27 +86,29 @@ export function nodeAmount(n: GraphNode): number {
   return Math.max(n.lead?.amount ?? 0, n.amount_in, n.amount_out);
 }
 
-/** Edges and nodes on a lead's path, as ids of the report's graph. Walks from the lead
- * towards the seed using only edges whose transaction is on the lead's path, so sibling
- * branches of the same transaction are not included. */
+/** Every route by which the traced funds reached a lead from the start: the lead and all
+ * its ancestors (forward: what sent funds to it, transitively; backward: what it funded on
+ * the way to the start). Siblings of the same transactions are not on it. */
 export function leadPath(view: TraceView, leadIndex: number): { nodes: Set<string>; edges: Set<string> } {
   const nodes = new Set<string>();
   const edges = new Set<string>();
-  const lead = view.report.leads[leadIndex];
   const start = nodeForLead(view, leadIndex);
-  if (!lead || !start) return { nodes, edges };
-  const pathTx = new Set(lead.path);
+  if (!view.report.leads[leadIndex] || !start) return { nodes, edges };
   const forward = view.report.direction === "forward";
+  // Edges by the node they lead back from.
+  const back = new Map<string, GraphEdge[]>();
+  for (const e of view.graph.edges) {
+    if (e.source === e.target) continue;
+    const from = forward ? e.target : e.source;
+    (back.get(from) ?? back.set(from, []).get(from)!).push(e);
+  }
   const queue = [start.id];
   nodes.add(start.id);
   while (queue.length) {
-    const id = queue.shift()!;
-    for (const e of view.graph.edges) {
-      if (!pathTx.has(e.txid) || edges.has(e.id)) continue;
-      // Forward: walk back along incoming edges. Backward: walk along outgoing edges.
-      const next = forward ? (e.target === id ? e.source : null) : e.source === id ? e.target : null;
-      if (next === null) continue;
+    const id = queue.pop()!;
+    for (const e of back.get(id) ?? []) {
       edges.add(e.id);
+      const next = forward ? e.source : e.target;
       if (!nodes.has(next)) {
         nodes.add(next);
         queue.push(next);
@@ -350,7 +352,10 @@ export function buildDisplay(view: TraceView, o: DisplayOptions): Display {
       group: "nodes",
       data: {
         id,
-        label: `${n.label}\n${formatBtcShort(amount)} BTC`,
+        // Endpoints often share a name ("Likely service"): a short id tells them apart.
+        label: n.entity
+          ? `${n.label}\n${shortId(n.address ?? n.txid ?? id, 6, 4)}\n${formatBtcShort(amount)} BTC`
+          : `${n.label}\n${formatBtcShort(amount)} BTC`,
         size: nodeSize(amount, seedAmount),
         isLead: n.lead ? 1 : 0,
       },
@@ -428,7 +433,7 @@ export function buildDisplay(view: TraceView, o: DisplayOptions): Display {
         target: m.target,
         label:
           formatBtcShort(m.amount) +
-          (peel ? " (peel)" : "") +
+
           (m.members.length > 1 ? (loop ? `, to itself ${m.members.length} times` : ` ×${m.members.length}`) : ""),
         width,
         // Keep the amount clear of the line and its arrow, however thick the line is.

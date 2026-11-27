@@ -158,7 +158,7 @@ export function formatBtcShort(value: number | bigint | string): string {
   const rounded = ((abs + unit / 2n) / unit) * unit;
   const whole = groupThousands((rounded / SATS_PER_BTC).toString());
   let frac = (rounded % SATS_PER_BTC).toString().padStart(8, "0").slice(0, decimals);
-  if (decimals === 8) frac = frac.replace(/0+$/, "");
+  // Small amounts keep all 8 decimals (exact sats), so "0.00000540" and "0.00000546" align.
   return `${sign}${whole}${frac ? "." + frac : ""}`;
 }
 
