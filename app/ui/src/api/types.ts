@@ -213,6 +213,10 @@ export interface TraceRequest {
   max_txs?: number | null;
   min_sats?: number | null;
   check_addresses?: boolean | null;
+  /** Continue an earlier trace: follow only this many sats of the seed (its share). */
+  share_sats?: number | null;
+  /** Continue an earlier trace whose funds were mixed in this transaction. */
+  mixed_in?: string | null;
 }
 
 export type StopReason =
@@ -267,6 +271,8 @@ export interface Flow {
   role: FlowRole;
   peel: boolean;
   note: string | null;
+  /** Transaction where the traced funds on this transfer were first mixed with others. */
+  mixed_in?: string | null;
 }
 
 export interface LabelSeen {
@@ -292,6 +298,10 @@ export interface TraceConfig {
   min_amount: number | null;
   check_addresses: boolean;
   stop_confidence: Confidence;
+  /** Continuing an earlier trace: only this many sats of the seed are followed. */
+  seed_share?: number | null;
+  /** Continuing an earlier trace whose funds were mixed in this transaction. */
+  mixed_in?: string | null;
 }
 
 /** One output of the seed transaction included in the trace. */

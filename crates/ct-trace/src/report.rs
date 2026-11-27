@@ -26,6 +26,14 @@ pub struct TraceConfig {
     pub check_addresses: bool,
     /// Stop at services detected with at least this confidence.
     pub stop_confidence: Confidence,
+    /// Continue an earlier trace: follow only this many sats of the seed output(s), the share
+    /// that came from the earlier trace (split pro-rata over several seed outputs).
+    #[serde(default)]
+    pub seed_share: Option<u64>,
+    /// Continue an earlier trace whose funds were already mixed in this transaction: the new
+    /// trace's amounts are allocations from the start.
+    #[serde(default)]
+    pub mixed_in: Option<String>,
 }
 
 impl Default for TraceConfig {
@@ -37,6 +45,8 @@ impl Default for TraceConfig {
             min_amount: None,
             check_addresses: true,
             stop_confidence: Confidence::Medium,
+            seed_share: None,
+            mixed_in: None,
         }
     }
 }
@@ -128,6 +138,10 @@ pub struct Flow {
     pub to_coin: Option<String>,
     // A coin reference without ":vout" stands for a whole transaction (e.g. funds entering a
     // CoinJoin, or leaving a service's payout): the graph draws it as the transaction.
+    /// Transaction where the traced funds on this transfer were first mixed with others (its
+    /// amount is then a pro-rata share). `None`: unmixed.
+    #[serde(default)]
+    pub mixed_in: Option<String>,
     /// Traced amount on this edge (not the full output value), base units.
     pub amount: u64,
     pub role: FlowRole,

@@ -257,6 +257,8 @@ impl AppService {
             max_txs: req.max_txs.unwrap_or(defaults.max_txs).clamp(1, 5_000),
             min_amount: req.min_sats,
             check_addresses: req.check_addresses.unwrap_or(true),
+            seed_share: req.share_sats.filter(|s| *s > 0),
+            mixed_in: req.mixed_in.as_deref().map(normalize_txid).transpose()?,
             ..defaults
         };
         let labels = self.labels();
@@ -460,6 +462,8 @@ mod tests {
                     max_txs: None,
                     min_sats: Some(1),
                     check_addresses: Some(false),
+                    share_sats: None,
+                    mixed_in: None,
                 },
                 &mut |_| {},
             )
@@ -467,6 +471,31 @@ mod tests {
             .unwrap();
         assert_eq!(t.report.leads.len(), 1);
         assert!(t.graph.nodes.len() >= 2);
+        // Continuing an earlier trace follows only its share of the output, and keeps the
+        // earlier mixing (amounts stay allocations).
+        let share = t.report.seed_amount / 4;
+        let c = s
+            .btc_trace(
+                TraceRequest {
+                    txid: txid(1),
+                    vout: Some(0),
+                    to: None,
+                    direction: ct_trace::Direction::Forward,
+                    max_hops: None,
+                    max_txs: None,
+                    min_sats: Some(1),
+                    check_addresses: Some(false),
+                    share_sats: Some(share),
+                    mixed_in: Some(txid(9)),
+                },
+                &mut |_| {},
+            )
+            .await
+            .unwrap();
+        assert_eq!(c.report.seed_amount, share);
+        assert_eq!(c.report.accounted(), share);
+        assert_eq!(c.report.config.seed_share, Some(share));
+        assert!(c.report.leads.iter().all(|l| l.mixed_in == Some(txid(9))));
         let bad = s
             .btc_trace(
                 TraceRequest {
@@ -478,6 +507,8 @@ mod tests {
                     max_txs: None,
                     min_sats: None,
                     check_addresses: None,
+                    share_sats: None,
+                    mixed_in: None,
                 },
                 &mut |_| {},
             )

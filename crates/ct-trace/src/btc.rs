@@ -114,9 +114,28 @@ pub async fn trace_bitcoin(
             .map(|o| (o.index, o.address.clone(), o.value))
             .collect(),
     };
-    let seed_amount: u64 = match (config.direction, &seed) {
+    let full_amount: u64 = match (config.direction, &seed) {
         (Direction::Backward, Seed::Tx { .. }) => seed_tx.total_out(),
         _ => seed_outputs.iter().map(|(_, _, v)| v).sum(),
+    };
+    // Continuing an earlier trace: only its share of the seed is followed.
+    let seed_amount = config
+        .seed_share
+        .map_or(full_amount, |s| s.min(full_amount));
+    // The seed outputs' traced amounts: their values, scaled to the share (remainder to the
+    // first so they add up exactly).
+    let traced_values: Vec<u64> = {
+        let mut v: Vec<u64> = seed_outputs
+            .iter()
+            .map(|(_, _, value)| {
+                (*value as u128 * seed_amount as u128 / full_amount.max(1) as u128) as u64
+            })
+            .collect();
+        let rest = seed_amount.saturating_sub(v.iter().sum::<u64>());
+        if let Some(first) = v.first_mut() {
+            *first += rest;
+        }
+        v
     };
     let min_amount = config
         .min_amount
@@ -144,15 +163,16 @@ pub async fn trace_bitcoin(
         Direction::Forward => {
             let coins = seed_outputs
                 .into_iter()
-                .map(|(vout, address, value)| Coin {
+                .zip(traced_values.iter())
+                .map(|((vout, address, _), traced)| Coin {
                     txid: seed_tx.txid.clone(),
                     vout,
                     address,
-                    amount: value,
+                    amount: *traced,
                     hop: 0,
                     time: block_time(&seed_tx),
                     path: vec![seed_tx.txid.clone()],
-                    mixed_at: None,
+                    mixed_at: config.mixed_in.clone(),
                 })
                 .collect();
             t.forward(coins, min_amount, progress).await;
@@ -167,10 +187,11 @@ pub async fn trace_bitcoin(
                 }],
                 _ => seed_outputs
                     .iter()
-                    .map(|(vout, address, value)| Receiver {
+                    .zip(traced_values.iter())
+                    .map(|((vout, address, _), traced)| Receiver {
                         address: address.clone(),
                         coin: Some(format!("{}:{vout}", seed_tx.txid)),
-                        amount: *value,
+                        amount: *traced,
                     })
                     .collect(),
             };
@@ -179,7 +200,7 @@ pub async fn trace_bitcoin(
                 hop: 0,
                 receivers,
                 path: vec![seed_tx.txid.clone()],
-                mixed_at: None,
+                mixed_at: config.mixed_in.clone(),
             };
             t.backward(vec![source], min_amount, progress).await;
         }
@@ -920,6 +941,7 @@ impl<'a> Tracer<'a> {
                     role: FlowRole::Payment,
                     peel: false,
                     note: Some(shape.describe()),
+                    mixed_in: self.mixed_in.clone(),
                 });
                 self.add_lead(
                     LeadKind::Endpoint,
@@ -1007,6 +1029,7 @@ impl<'a> Tracer<'a> {
                 .mixed_at
                 .clone()
                 .or_else(|| mixes.then(|| stx.txid.clone()));
+            self.mixed_in = mixed_at.clone();
             let change = detect_change(&stx);
             let peel = is_peel_step(&stx, change.as_ref());
             if peel {
@@ -1041,6 +1064,7 @@ impl<'a> Tracer<'a> {
                     role,
                     peel,
                     note: note.clone(),
+                    mixed_in: self.mixed_in.clone(),
                 });
                 push(
                     &mut pending,
@@ -1103,6 +1127,7 @@ impl<'a> Tracer<'a> {
                 role: FlowRole::Source,
                 peel: false,
                 note: note.clone(),
+                mixed_in: self.mixed_in.clone(),
             });
         }
     }
@@ -1346,6 +1371,7 @@ impl<'a> Tracer<'a> {
                         role: FlowRole::Source,
                         peel: false,
                         note: note.clone(),
+                        mixed_in: self.mixed_in.clone(),
                     });
                     per_input[k] += share;
                 }

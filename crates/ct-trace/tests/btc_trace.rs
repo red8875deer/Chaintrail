@@ -110,6 +110,13 @@ async fn mixed_funds_split_pro_rata() {
     };
     assert_eq!(at(5), BTC / 2); // 1 × 2/4
     assert_eq!(at(6), 49_975_000); // 1 × 1.999/4
+    // Every transfer out of the mixing transaction is marked too.
+    assert!(
+        r.flows
+            .iter()
+            .filter(|f| f.txid == txid(2))
+            .all(|f| f.mixed_in == Some(txid(2)))
+    );
     // The amounts are a pro-rata allocation after mixing, not on-chain facts.
     for l in &r.leads {
         assert_eq!(l.mixed_in, Some(txid(2)), "{l:#?}");

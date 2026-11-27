@@ -3,7 +3,7 @@
 import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { TraceProgress, TraceRequest, TraceView as View } from "../api/types";
 import { call, isDesktop, onTraceProgress } from "../api/client";
-import { ErrorBox } from "../components/bits";
+import { Btc, ErrorBox } from "../components/bits";
 import { DetailsPanel } from "../components/DetailsPanel";
 import { type GraphControls, GraphCanvas, type Selection } from "../components/GraphCanvas";
 import { LeadsPanel } from "../components/LeadsPanel";
@@ -26,6 +26,9 @@ interface FormState {
   maxTxs: string;
   minBtc: string;
   checkAddresses: boolean;
+  /** Continuing an earlier trace: its share of the seed (sats) and earlier mixing. */
+  share?: number;
+  mixed?: string;
 }
 
 function fromParams(p: TraceParams | null): FormState {
@@ -38,6 +41,8 @@ function fromParams(p: TraceParams | null): FormState {
     maxTxs: String(p?.maxTxs ?? DEFAULT_MAX_TXS),
     minBtc: p?.minBtc ?? "",
     checkAddresses: p?.checkAddresses ?? true,
+    share: p?.share,
+    mixed: p?.mixed,
   };
 }
 
@@ -58,6 +63,8 @@ function toRequest(f: FormState): TraceRequest | string {
     max_txs: int(f.maxTxs, DEFAULT_MAX_TXS),
     min_sats: min !== null ? Number(min) : null,
     check_addresses: f.checkAddresses,
+    share_sats: f.share ?? null,
+    mixed_in: f.mixed ?? null,
   };
 }
 
@@ -98,6 +105,8 @@ export function TraceView({ params }: { params: TraceParams | null }) {
       maxTxs: req.max_txs ?? undefined,
       minBtc: f.minBtc.trim() || undefined,
       checkAddresses: req.check_addresses ?? undefined,
+      share: f.share,
+      mixed: f.mixed,
       run: true,
     };
     const current = parseRoute(window.location.hash);
@@ -151,7 +160,12 @@ export function TraceView({ params }: { params: TraceParams | null }) {
     e.preventDefault();
     void run(form);
   };
-  const set = <K extends keyof FormState>(k: K, v: FormState[K]) => setForm((f) => ({ ...f, [k]: v }));
+  // Changing what is traced ends a continuation: its share belongs to that seed only.
+  const set = <K extends keyof FormState>(k: K, v: FormState[K]) =>
+    setForm((f) => {
+      const seedChanged = k === "txid" || k === "vout" || k === "to" || k === "direction";
+      return { ...f, [k]: v, ...(seedChanged ? { share: undefined, mixed: undefined } : {}) };
+    });
 
   // What is drawn: small flows hidden, small branches grouped. The main route to every lead
   // selected so far is revealed and stays revealed, so selecting leads does not reshuffle
@@ -249,6 +263,19 @@ export function TraceView({ params }: { params: TraceParams | null }) {
         <button type="submit" className="btn primary" disabled={running}>
           {running ? "Tracing…" : "Trace"}
         </button>
+        {form.share !== undefined && (
+          <p className="continuation" role="note">
+            Continuing an earlier trace: following only <Btc sats={form.share} /> of this output, the share that came
+            from it{form.mixed ? " (already mixed with other funds, so amounts are pro-rata shares)" : ""}.{" "}
+            <button
+              type="button"
+              className="btn subtle"
+              onClick={() => setForm((f) => ({ ...f, share: undefined, mixed: undefined }))}
+            >
+              Trace the whole output instead
+            </button>
+          </p>
+        )}
         <details>
           <summary>Limits and options</summary>
           <div className="more">

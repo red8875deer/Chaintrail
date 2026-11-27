@@ -167,6 +167,12 @@ pub struct TraceRequest {
     pub min_sats: Option<u64>,
     /// Look up address activity to detect busy service wallets (default true).
     pub check_addresses: Option<bool>,
+    /// Continue an earlier trace: follow only this many sats of the seed (its share).
+    #[serde(default)]
+    pub share_sats: Option<u64>,
+    /// Continue an earlier trace whose funds were mixed in this transaction.
+    #[serde(default)]
+    pub mixed_in: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]

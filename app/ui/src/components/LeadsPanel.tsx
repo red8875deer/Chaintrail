@@ -223,6 +223,12 @@ export function LeadsPanel({
         <p className="summary-amount">
           <Btc sats={r.seed_amount} />
         </p>
+        {r.config.seed_share !== null && r.config.seed_share !== undefined && (
+          <p className="small">
+            of <Btc sats={r.seed_outputs.reduce((s, o) => s + o.amount, 0)} /> in this output: continued from an
+            earlier trace, following only its share.
+          </p>
+        )}
         <p className="muted small mono" title={r.seed}>
           {r.seed.length > 40 ? `${r.seed.slice(0, 18)}…${r.seed.slice(-18)}` : r.seed}
         </p>

@@ -13,6 +13,10 @@ export interface TraceParams {
   maxTxs?: number;
   minBtc?: string;
   checkAddresses?: boolean;
+  /** Continuing an earlier trace: follow only this many sats (the share it traced here). */
+  share?: number;
+  /** Continuing an earlier trace whose funds were mixed in this transaction. */
+  mixed?: string;
   /** Start the trace immediately. */
   run?: boolean;
 }
@@ -54,6 +58,8 @@ export function parseRoute(hash: string): Route {
           maxTxs: num("txs"),
           minBtc: q.get("min") ?? undefined,
           checkAddresses: q.get("check") === "0" ? false : undefined,
+          share: num("share"),
+          mixed: q.get("mixed") ?? undefined,
           run: q.get("run") === "1",
         },
       };
@@ -83,6 +89,8 @@ export function href(route: Route): string {
       if (p.maxTxs !== undefined) q.set("txs", String(p.maxTxs));
       if (p.minBtc) q.set("min", p.minBtc);
       if (p.checkAddresses === false) q.set("check", "0");
+      if (p.share !== undefined) q.set("share", String(p.share));
+      if (p.mixed) q.set("mixed", p.mixed);
       if (p.run) q.set("run", "1");
       return `#/trace?${q.toString()}`;
     }
@@ -105,6 +113,8 @@ export function sameTrace(a: TraceParams, b: TraceParams): boolean {
       p.maxTxs ?? DEFAULT_MAX_TXS,
       p.minBtc ?? "",
       p.checkAddresses === false ? "0" : "",
+      p.share ?? "",
+      p.mixed ?? "",
     ].join("|");
   return key(a) === key(b);
 }

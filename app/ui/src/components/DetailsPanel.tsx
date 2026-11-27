@@ -41,21 +41,92 @@ function ClaimExplained({ claim }: { claim: Claim }) {
   );
 }
 
-/** Where to trace next from a node. */
-function nextTrace(view: TraceView, node: GraphNode, lead: Lead | undefined): TraceParams | null {
-  const forward = view.report.direction === "forward";
-  if (lead?.txid) {
-    return forward
-      ? { txid: lead.txid, to: lead.address?.value, direction: "forward", run: true }
-      : { txid: lead.txid, direction: "backward", run: true };
+/** Where to continue the trace from a node. The new trace follows only the share of the
+ * funds this trace followed there (not the whole output) and keeps any earlier mixing, so
+ * its amounts stay comparable with this one. */
+function nextTrace(
+  view: TraceView,
+  node: GraphNode,
+  lead: Lead | undefined,
+): { params: TraceParams; label: string; caution?: string } | null {
+  const r = view.report;
+  const forward = r.direction === "forward";
+  const again = forward ? "Trace onward from here" : "Trace further back";
+  if (lead) {
+    const k = lead.kind.kind;
+    // At rest: nothing moved. Mined: the origin. Mixer: following through is unreliable.
+    if (k === "at_rest" || k === "mined" || lead.category === "mixer") return null;
+    if (k === "unexplored" && lead.txid && lead.vout !== null && lead.vout !== undefined) {
+      return {
+        label: again,
+        params: {
+          txid: lead.txid,
+          vout: lead.vout,
+          direction: r.direction,
+          share: lead.amount,
+          mixed: lead.mixed_in ?? undefined,
+          run: true,
+        },
+      };
+    }
+    if (k === "endpoint") {
+      // Backward, an endpoint is where the funds came from: the end of the trail.
+      if (!forward || !node.address) return null;
+      const deposit = view.graph.edges
+        .filter((e) => e.target === node.id && e.source !== e.target)
+        .sort((a, b) => b.amount - a.amount)[0];
+      if (!deposit) return null;
+      return {
+        label: "Trace onward through this service",
+        caution:
+          "A service pools many customers' funds: after a deposit, which payments carry these funds is an allocation, not a link. Records from the service are more reliable.",
+        params: {
+          txid: deposit.txid,
+          to: node.address,
+          direction: "forward",
+          share: lead.amount,
+          mixed: lead.mixed_in ?? deposit.txid,
+          run: true,
+        },
+      };
+    }
   }
-  if (forward && node.address) {
-    const incoming = view.graph.edges
-      .filter((e) => e.target === node.id)
-      .sort((a, b) => b.amount - a.amount)[0];
-    if (incoming) return { txid: incoming.txid, to: node.address, direction: "forward", run: true };
+  if (!node.address) return null;
+  // An address on the way: continue from the largest transfer into it (forward) or out of
+  // it (backward), with that transfer's traced amount.
+  const edge = view.graph.edges
+    .filter((e) => e.source !== e.target && (forward ? e.target === node.id : e.source === node.id))
+    .sort((a, b) => b.amount - a.amount)[0];
+  if (!edge) return null;
+  const flow = r.flows.find(
+    (f) => f.txid === edge.txid && (forward ? f.to?.value === node.address : f.from?.value === node.address),
+  );
+  if (forward) {
+    return {
+      label: again,
+      params: {
+        txid: edge.txid,
+        to: node.address,
+        direction: "forward",
+        share: edge.amount,
+        mixed: flow?.mixed_in ?? undefined,
+        run: true,
+      },
+    };
   }
-  return null;
+  const coin = flow?.from_coin?.split(":");
+  if (!coin || coin.length !== 2) return null;
+  return {
+    label: again,
+    params: {
+      txid: coin[0]!,
+      vout: Number(coin[1]),
+      direction: "backward",
+      share: edge.amount,
+      mixed: flow?.mixed_in ?? undefined,
+      run: true,
+    },
+  };
 }
 
 function GroupDetails({
@@ -358,6 +429,7 @@ function NodeDetails({
           </dd>
         </div>
       </dl>
+      {next?.caution && <p className="small muted">{next.caution}</p>}
       <div className="actions">
         {node.address && (
           <a className="btn" href={href({ page: "address", address: node.address })}>
@@ -365,8 +437,8 @@ function NodeDetails({
           </a>
         )}
         {next && (
-          <a className="btn" href={href({ page: "trace", params: next })}>
-            {view.report.direction === "forward" ? "Trace onward from here" : "Trace further back"}
+          <a className="btn" href={href({ page: "trace", params: next.params })} title={next.caution}>
+            {next.label}
           </a>
         )}
         {node.address && (
