@@ -59,3 +59,13 @@ describe("extractId", () => {
     expect(extractId("1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa")).toBe("1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa");
   });
 });
+
+describe("csvCell", () => {
+  it("neutralises spreadsheet formulas in text", async () => {
+    const { csvCell } = await import("./format");
+    expect(csvCell('=HYPERLINK("http://x")')).toBe(`"'=HYPERLINK(""http://x"")"`);
+    expect(csvCell("@cmd")).toBe("'@cmd");
+    expect(csvCell("Zürich, CH")).toBe('"Zürich, CH"');
+    expect(csvCell(-5)).toBe("-5");
+  });
+});

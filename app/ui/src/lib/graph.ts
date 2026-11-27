@@ -70,6 +70,12 @@ function basis(view: TraceView, n: GraphNode): "fact" | "inference" | "attributi
   return lead ? lead.claim.kind : "none";
 }
 
+/** Long names (third-party labels can be hundreds of characters) are shortened on the
+ * graph; the details panel shows them in full. */
+function clip(label: string, max = 48): string {
+  return label.length > max ? `${label.slice(0, max - 1).trimEnd()}…` : label;
+}
+
 export function nodeSize(amount: number, seedAmount: number): number {
   const share = seedAmount > 0 ? Math.min(1, amount / seedAmount) : 0;
   return Math.round(24 + 34 * Math.sqrt(share));
@@ -354,8 +360,8 @@ export function buildDisplay(view: TraceView, o: DisplayOptions): Display {
         id,
         // Endpoints often share a name ("Likely service"): a short id tells them apart.
         label: n.entity
-          ? `${n.label}\n${shortId(n.address ?? n.txid ?? id, 6, 4)}\n${formatBtcShort(amount)} BTC`
-          : `${n.label}\n${formatBtcShort(amount)} BTC`,
+          ? `${clip(n.label)}\n${shortId(n.address ?? n.txid ?? id, 6, 4)}\n${formatBtcShort(amount)} BTC`
+          : `${clip(n.label)}\n${formatBtcShort(amount)} BTC`,
         size: nodeSize(amount, seedAmount),
         isLead: n.lead ? 1 : 0,
       },
@@ -636,7 +642,7 @@ export function graphStyle(p: Palette): StylesheetJsonBlock[] {
       selector: "edge.minor.fan-out.hover, edge.minor.fan-out.path, edge.minor.fan-out:selected",
       style: { label: "", "target-label": "data(label)", "target-text-offset": 56, "target-text-rotation": "none" },
     },
-    { selector: ".dim", style: { opacity: 0.22 } },
+    { selector: ".dim", style: { opacity: 0.3 } },
     {
       selector: "edge.path",
       style: {

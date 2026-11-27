@@ -64,7 +64,8 @@ export function leadsCsv(view: TraceView): string {
 }
 
 export function exportCsv(view: TraceView) {
-  download(`${baseName(view)}-leads.csv`, leadsCsv(view), "text/csv");
+  // A byte-order mark so spreadsheet programs read the file as UTF-8 ("Zürich").
+  download(`${baseName(view)}-leads.csv`, "\uFEFF" + leadsCsv(view), "text/csv;charset=utf-8");
 }
 
 /** Saves the graph image; returns false if there is nothing to save. */

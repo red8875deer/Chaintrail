@@ -9,7 +9,8 @@
   --ink: #14283a;
   --muted: #5c6b78;
   --trail: #2d6e8e;
-  --amber: #d98b1c;
+  /* Amber and address grey meet 3:1 against the page (focus rings, paths, nodes). */
+  --amber: #b5700f;
   --amber-wash: #f7e7cc;
   --danger: #b4372f;
   --ok: #1f7a5c;
@@ -27,7 +28,7 @@
   --n-at_rest: #2d6e8e;
   --n-unexplored: #9aa7b1;
   --n-transaction: #6b4fa0;
-  --n-address: #8fa6b6;
+  --n-address: #71899b;
 
   --font: "Atkinson Hyperlegible Next", system-ui, sans-serif;
   --mono: "Atkinson Hyperlegible Mono", ui-monospace, monospace;
@@ -207,6 +208,7 @@ p {
 .search input::placeholder {
   font-family: var(--font);
   color: var(--muted);
+  opacity: 1;
 }
 
 .search button {
@@ -426,7 +428,7 @@ table.ledger tr.clickable:hover td {
 }
 
 .btc .zeros {
-  opacity: 0.35;
+  color: var(--muted);
 }
 
 .btc .unit {
@@ -1189,4 +1191,63 @@ table.ledger a:hover,
   border-left: 3px solid var(--amber);
   background: var(--paper);
   font-size: 0.88rem;
+}
+
+/* Narrow windows and 200% zoom: graph above, results below, the page scrolls. */
+@media (max-width: 900px) {
+  .app,
+  .workspace {
+    height: auto;
+    min-height: 100%;
+  }
+  .topbar {
+    flex-wrap: wrap;
+    gap: 8px 14px;
+    padding: 8px 12px;
+  }
+  .trace-form {
+    padding: 10px 12px;
+  }
+  .trace-form .field input[name="txid"] {
+    width: min(34ch, calc(100vw - 48px));
+  }
+  .board {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(360px, 65vh) auto;
+  }
+  .side {
+    border-left: 0;
+    border-top: 1px solid var(--rule);
+  }
+  .side-scroll {
+    overflow: visible;
+  }
+  .details-anchor:has(> .details) {
+    position: static;
+    max-height: none;
+    margin: 0;
+    padding: 0;
+    box-shadow: none;
+  }
+  .view-note {
+    font-size: 0.78rem;
+  }
+}
+
+/* Read by screen readers only. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.canvas:focus-visible {
+  outline: 3px solid var(--amber);
+  outline-offset: -3px;
 }

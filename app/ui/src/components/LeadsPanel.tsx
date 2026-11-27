@@ -1,8 +1,8 @@
 // Leads: where the traced funds ended up (or came from), largest first.
 
-import { useEffect, useState } from "react";
+import { type KeyboardEvent, useEffect, useState } from "react";
 import type { Lead, TraceView } from "../api/types";
-import { formatShare, formatUtcDate, shareBasisPoints, shortId } from "../lib/format";
+import { formatBtc, formatShare, formatUtcDate, shareBasisPoints, shortId } from "../lib/format";
 import { categoryName, leadKindName } from "../lib/meaning";
 import { Basis, Btc, Meter, categoryColor } from "./bits";
 
@@ -11,12 +11,15 @@ function LeadRow({
   index,
   total,
   selected,
+  tabbable,
   onSelect,
 }: {
   lead: Lead;
   index: number;
   total: number;
   selected: boolean;
+  /** The one row of the list reachable with Tab (arrow keys move within the list). */
+  tabbable: boolean;
   onSelect: (i: number) => void;
 }) {
   const pct = Number(shareBasisPoints(lead.amount, total)) / 100;
@@ -31,7 +34,9 @@ function LeadRow({
       className="lead"
       role="option"
       aria-selected={selected}
-      tabIndex={0}
+      aria-label={`${lead.title}: ${formatBtc(lead.amount, 8)} BTC, ${formatShare(lead.amount, total)}${lead.address ? `, ${shortId(lead.address.value)}` : ""}`}
+      data-lead={index}
+      tabIndex={tabbable ? 0 : -1}
       onClick={() => onSelect(index)}
       onKeyDown={(e) => {
         if (e.key === "Enter" || e.key === " ") {
@@ -185,6 +190,21 @@ function Exposure({
   );
 }
 
+/** Arrow keys, Home and End move through a list of leads and select (one Tab stop). */
+function listKeys(onSelect: (i: number) => void) {
+  return (e: KeyboardEvent<HTMLUListElement>) => {
+    const items = [...e.currentTarget.querySelectorAll<HTMLLIElement>("li[data-lead]")];
+    const at = items.indexOf(document.activeElement as HTMLLIElement);
+    const to =
+      e.key === "ArrowDown" ? at + 1 : e.key === "ArrowUp" ? at - 1 : e.key === "Home" ? 0 : e.key === "End" ? items.length - 1 : null;
+    if (to === null || items.length === 0) return;
+    e.preventDefault();
+    const next = items[Math.max(0, Math.min(items.length - 1, to))]!;
+    next.focus();
+    onSelect(Number(next.dataset.lead));
+  };
+}
+
 export function LeadsPanel({
   view,
   selectedLead,
@@ -259,14 +279,15 @@ export function LeadsPanel({
             to follow small amounts.
           </p>
         )}
-        <ul className="leads" role="listbox" aria-label="Leads">
-          {found.map(({ lead, index }) => (
+        <ul className="leads" role="listbox" aria-label="Leads" onKeyDown={listKeys(onSelectLead)}>
+          {found.map(({ lead, index }, k) => (
             <LeadRow
               key={index}
               lead={lead}
               index={index}
               total={r.seed_amount}
               selected={selectedLead === index}
+              tabbable={found.some((x) => x.index === selectedLead) ? selectedLead === index : k === 0}
               onSelect={onSelectLead}
             />
           ))}
@@ -289,14 +310,21 @@ export function LeadsPanel({
             </span>
           </button>
           {showOpen && (
-            <ul className="leads" role="listbox" aria-label="Branches not followed" style={{ marginTop: 6 }}>
-              {open.map(({ lead, index }) => (
+            <ul
+              className="leads"
+              role="listbox"
+              aria-label="Branches not followed"
+              style={{ marginTop: 6 }}
+              onKeyDown={listKeys(onSelectLead)}
+            >
+              {open.map(({ lead, index }, k) => (
                 <LeadRow
                   key={index}
                   lead={lead}
                   index={index}
                   total={r.seed_amount}
                   selected={selectedLead === index}
+                  tabbable={open.some((x) => x.index === selectedLead) ? selectedLead === index : k === 0}
                   onSelect={onSelectLead}
                 />
               ))}

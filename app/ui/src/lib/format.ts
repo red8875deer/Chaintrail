@@ -141,7 +141,10 @@ export function formatElapsed(ms: number): string {
 /** Quote a value for CSV (RFC 4180). */
 export function csvCell(v: string | number | bigint | null | undefined): string {
   if (v === null || v === undefined) return "";
-  const s = String(v);
+  let s = String(v);
+  // Text starting like a formula (=, +, -, @) would run in a spreadsheet: label data comes
+  // from third parties, so it is made plain text.
+  if (typeof v === "string" && /^[=+\-@\t\r]/.test(s)) s = `'${s}`;
   return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
 

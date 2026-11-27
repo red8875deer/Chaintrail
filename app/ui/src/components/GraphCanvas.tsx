@@ -6,7 +6,7 @@
 // removed, the layout is recomputed and nodes glide to their new places (so the reader can
 // follow what moved) instead of the picture being replaced.
 
-import { type RefObject, useEffect, useRef } from "react";
+import { type KeyboardEvent, type RefObject, useEffect, useRef, useState } from "react";
 import cytoscape, { type Core, type EdgeSingular, type Position } from "cytoscape";
 import dagre from "cytoscape-dagre";
 import { type Display, type Palette, graphStyle } from "../lib/graph";
@@ -507,5 +507,72 @@ export function GraphCanvas({
     if (cy && from) glide(cy, from);
   }, [display]);
 
-  return <div ref={host} className="canvas" aria-label="Trace graph" role="img" />;
+  // Keyboard: arrows move along the money (right: where it went, left: where it came from,
+  // up/down: neighbours in the same column), Escape clears. Each move is announced.
+  const [said, setSaid] = useState("");
+  const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
+    const cy = cyRef.current;
+    if (!cy) return;
+    if (e.key === "Escape") {
+      onSelectRef.current(null);
+      setSaid("Selection cleared");
+      return;
+    }
+    if (!["ArrowRight", "ArrowLeft", "ArrowUp", "ArrowDown"].includes(e.key)) return;
+    e.preventDefault();
+    const current = selected?.type === "node" ? cy.getElementById(selected.id) : cy.collection();
+    let next: cytoscape.NodeSingular | undefined;
+    if (current.empty() || !current.isNode()) {
+      const start = focusRef.current ? cy.getElementById(focusRef.current) : cy.nodes(".seed");
+      next = (start.nonempty() ? start : cy.nodes()).first() as cytoscape.NodeSingular;
+    } else {
+      const n = current as cytoscape.NodeSingular;
+      const p = n.position();
+      const byAmount = (edges: cytoscape.EdgeCollection, end: "source" | "target") => {
+        let best: cytoscape.EdgeSingular | undefined;
+        edges.forEach((x) => {
+          if (!x.isLoop() && (!best || Number(x.data("amount") ?? 0) > Number(best.data("amount") ?? 0))) best = x;
+        });
+        return best ? (end === "source" ? best.source() : best.target()) : undefined;
+      };
+      if (e.key === "ArrowRight") next = byAmount(n.outgoers("edge"), "target");
+      else if (e.key === "ArrowLeft") next = byAmount(n.incomers("edge"), "source");
+      else {
+        const up = e.key === "ArrowUp";
+        let gap = Infinity;
+        cy.nodes().forEach((m) => {
+          const q = m.position();
+          if (m.id() === n.id() || Math.abs(q.x - p.x) >= 80 || (up ? q.y >= p.y : q.y <= p.y)) return;
+          if (Math.abs(q.y - p.y) < gap) {
+            gap = Math.abs(q.y - p.y);
+            next = m;
+          }
+        });
+      }
+    }
+    if (!next) {
+      setSaid(e.key === "ArrowRight" ? "No further step" : e.key === "ArrowLeft" ? "This is where the funds start" : "No more in this column");
+      return;
+    }
+    onSelectRef.current({ type: "node", id: next.id() });
+    controls.current?.focus(next.id());
+    setSaid(String(next.data("label") ?? next.id()).replace(/\n/g, ", "));
+  };
+
+  return (
+    <>
+      <div
+        ref={host}
+        className="canvas"
+        role="application"
+        tabIndex={0}
+        aria-roledescription="trace graph"
+        aria-label="Trace graph. Arrow keys move between addresses: right follows the funds onward, left goes back towards the start, up and down move within a column. Escape clears the selection."
+        onKeyDown={onKeyDown}
+      />
+      <div className="sr-only" aria-live="polite">
+        {said}
+      </div>
+    </>
+  );
 }

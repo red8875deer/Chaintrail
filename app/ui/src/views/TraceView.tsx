@@ -450,6 +450,8 @@ export function TraceView({ params }: { params: TraceParams | null }) {
                   onClose={() => {
                     setSelection(null);
                     setSelectedLead(null);
+                    // Keep keyboard users in place: back to the graph.
+                    document.querySelector<HTMLElement>(".canvas")?.focus();
                   }}
                 />
                 <LeadsPanel view={view} selectedLead={selectedLead} onSelectLead={selectLead} />
