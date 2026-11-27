@@ -283,6 +283,43 @@ function placeNear(cy: Core, added: cytoscape.NodeCollection) {
   }
 }
 
+/** Graphs with more nodes than this are laid out in a worker (dagre takes 1–2 s at 1,500+). */
+const BIG_GRAPH = 300;
+let layoutWorker: Worker | null = null;
+let layoutSeq = 0;
+
+/** The same layout as LAYOUT, computed off the main thread. Resolves to null when a newer
+ * layout was requested meanwhile (its result would be stale). */
+function layoutOffThread(cy: Core): Promise<Map<string, Position> | null> {
+  layoutWorker ??= new Worker(new URL("./layout.worker.ts", import.meta.url), { type: "module" });
+  const worker = layoutWorker;
+  const id = ++layoutSeq;
+  const nodes = cy.nodes().map((n) => {
+    const d = n.layoutDimensions({ nodeDimensionsIncludeLabels: true });
+    return { id: n.id(), w: d.w, h: d.h };
+  });
+  const edges = cy.edges().map((e) => ({
+    id: e.id(),
+    source: e.source().id(),
+    target: e.target().id(),
+    weight: Number(e.data("weight") ?? 1),
+  }));
+  return new Promise((resolve) => {
+    const on = (ev: MessageEvent<{ id: number; positions: [string, number, number][] }>) => {
+      if (ev.data.id !== id) return;
+      worker.removeEventListener("message", on);
+      resolve(id === layoutSeq ? new Map(ev.data.positions.map(([k, x, y]) => [k, { x, y }])) : null);
+    };
+    worker.addEventListener("message", on);
+    worker.postMessage({
+      id,
+      options: { rankDir: LAYOUT.rankDir, nodeSep: LAYOUT.nodeSep, rankSep: LAYOUT.rankSep, edgeSep: LAYOUT.edgeSep },
+      nodes,
+      edges,
+    });
+  });
+}
+
 /** Re-enables Cytoscape's warnings after the last glide (glides can overlap). */
 let warningsTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -331,6 +368,7 @@ export function GraphCanvas({
   onSelectRef.current = onSelect;
   const focusRef = useRef(focusId);
   focusRef.current = focusId;
+  const [arranging, setArranging] = useState(false);
 
   // Create the graph once.
   useEffect(() => {
@@ -362,11 +400,29 @@ export function GraphCanvas({
       relayout: () => {
         cy.nodes().stop(true, true);
         const before = new Map(cy.nodes().map((n) => [n.id(), { ...n.position() }]));
+        const finish = () => {
+          routeAroundNodes(cy);
+          const path = cy.elements(".path");
+          view(cy, path.nonempty() ? path : cy.elements(), focus(), true);
+          glide(cy, before);
+        };
+        if (cy.nodes().length > BIG_GRAPH) {
+          setArranging(true);
+          void layoutOffThread(cy).then((pos) => {
+            if (!pos || cyRef.current !== cy) return;
+            cy.batch(() => {
+              cy.nodes().forEach((n) => {
+                const p = pos.get(n.id());
+                if (p) n.position(p);
+              });
+            });
+            finish();
+            setArranging(false);
+          });
+          return;
+        }
         cy.layout(LAYOUT as unknown as cytoscape.LayoutOptions).run();
-        routeAroundNodes(cy);
-        const path = cy.elements(".path");
-        view(cy, path.nonempty() ? path : cy.elements(), focus(), true);
-        glide(cy, before);
+        finish();
       },
       // Sharp but within the browser's canvas size limit (a too-large canvas silently
       // yields an empty image).
@@ -400,14 +456,19 @@ export function GraphCanvas({
     nodeSet.current = ids;
     const before = new Map(cy.nodes().map((n) => [n.id(), { ...n.position() }]));
     const want = new Map(display.elements.map((e) => [String(e.data.id), e]));
+    let structure = false;
     cy.batch(() => {
       cy.elements().forEach((el) => {
-        if (!want.has(el.id())) cy.remove(el);
+        if (!want.has(el.id())) {
+          cy.remove(el);
+          structure = true;
+        }
       });
       for (const [id, def] of want) {
         const el = cy.getElementById(id);
         if (el.empty()) {
           cy.add(def);
+          structure = true;
         } else {
           const { id: _id, source: _s, target: _t, ...rest } = def.data;
           el.data(rest);
@@ -426,6 +487,32 @@ export function GraphCanvas({
         if (old.nonempty()) before.set(n.id(), before.get(old.id())!);
       });
       glideFrom.current = before;
+    } else if (nodesChanged && cy.nodes().length > BIG_GRAPH) {
+      // Large graph: lay out in a worker; meanwhile new nodes wait next to a neighbour.
+      cy.nodes().forEach((n) => {
+        if (before.has(n.id())) return;
+        const old = n.neighborhood("node").filter((m) => before.has(m.id())).first();
+        if (old.nonempty()) n.position(before.get(old.id())!);
+      });
+      setArranging(true);
+      void layoutOffThread(cy).then((pos) => {
+        if (!pos || cyRef.current !== cy) return;
+        cy.nodes().stop(true, true);
+        const from = new Map(cy.nodes().map((n) => [n.id(), { ...n.position() }]));
+        cy.batch(() => {
+          cy.nodes().forEach((n) => {
+            const p = pos.get(n.id());
+            if (p) n.position(p);
+          });
+        });
+        routeAroundNodes(cy);
+        const onPath = cy.elements(".path");
+        const focus = focusRef.current ? cy.getElementById(focusRef.current) : cy.nodes(".seed");
+        view(cy, onPath.nonempty() ? onPath : cy.elements(), focus, !first);
+        if (!first) glide(cy, from);
+        setArranging(false);
+      });
+      return;
     } else if (nodesChanged) {
       cy.layout(LAYOUT as unknown as cytoscape.LayoutOptions).run();
       // New nodes appear from a neighbour that was already drawn.
@@ -438,7 +525,8 @@ export function GraphCanvas({
       const focus = focusRef.current ? cy.getElementById(focusRef.current) : cy.nodes(".seed");
       view(cy, cy.elements(), focus, !first);
     }
-    routeAroundNodes(cy);
+    // Re-route only when lines were added or removed (labels changing alone keep their place).
+    if (structure) routeAroundNodes(cy);
   }, [display]);
 
   // Follow the system theme.
@@ -573,6 +661,11 @@ export function GraphCanvas({
       <div className="sr-only" aria-live="polite">
         {said}
       </div>
+      {arranging && (
+        <div className="arranging" role="status">
+          Arranging the graph…
+        </div>
+      )}
     </>
   );
 }
