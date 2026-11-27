@@ -132,6 +132,17 @@ export function shortId(id: string, head = 8, tail = 6): string {
   return `${id.slice(0, head)}…${id.slice(-tail)}`;
 }
 
+/** A trace seed ("txid", "txid:vout", "txid → address") with its ids shortened. */
+export function shortSeed(seed: string): string {
+  return seed
+    .split(" → ")
+    .map((part) => {
+      const [id, vout] = part.split(":");
+      return shortId(id ?? "") + (vout !== undefined ? `:${vout}` : "");
+    })
+    .join(" → ");
+}
+
 /** Elapsed milliseconds → "0:07", "1:05". */
 export function formatElapsed(ms: number): string {
   const s = Math.max(0, Math.floor(ms / 1000));

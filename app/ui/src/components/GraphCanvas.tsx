@@ -92,6 +92,32 @@ function view(cy: Core, eles: Eles, focus: Eles | null, animate: boolean, overvi
     cx = clamp(cx, f.x2 + m - halfW, f.x1 - m + halfW);
     cy_ = clamp(cy_, f.y2 + m - halfH, f.y1 - m + halfH);
   }
+  // Never show the start of the trace cut in half (its amount would read wrong): bring it
+  // fully into view if the focus stays in view, else move it fully out.
+  if (!overview) {
+    const halfW = w / 2 / zoom;
+    const halfH = h / 2 / zoom;
+    const m = 12 / zoom;
+    const f = focus && focus.nonempty() ? focus.boundingBox() : null;
+    const keeps = (x: number, y: number) =>
+      !f || (f.x1 >= x - halfW && f.x2 <= x + halfW && f.y1 >= y - halfH && f.y2 <= y + halfH);
+    cy.nodes(".seed").forEach((n) => {
+      const b = n.boundingBox({ includeLabels: true });
+      const fix = (lo: number, hi: number, c: number, half: number, other: number, horizontal: boolean) => {
+        const v1 = c - half;
+        const v2 = c + half;
+        const cutLow = lo < v1 && hi > v1;
+        const cutHigh = hi > v2 && lo < v2;
+        if (!cutLow && !cutHigh) return c;
+        const inside = cutLow ? c - (v1 - lo) - m : c + (hi - v2) + m;
+        const outside = cutLow ? c + (hi - v1) + m : c - (v2 - lo) - m;
+        const ok = (x: number) => (horizontal ? keeps(x, other) : keeps(other, x));
+        return ok(inside) ? inside : ok(outside) ? outside : c;
+      };
+      cx = fix(b.x1, b.x2, cx, halfW, cy_, true);
+      cy_ = fix(b.y1, b.y2, cy_, halfH, cx, false);
+    });
+  }
   const pan = { x: PAD.left + w / 2 - zoom * cx, y: PAD.top + h / 2 - zoom * cy_ };
   cy.stop(true);
   if (animate && !reducedMotion()) cy.animate({ zoom, pan }, { duration: MOVE_MS });

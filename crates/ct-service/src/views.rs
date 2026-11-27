@@ -173,6 +173,10 @@ pub struct TraceRequest {
     /// Continue an earlier trace whose funds were mixed in this transaction.
     #[serde(default)]
     pub mixed_in: Option<String>,
+    /// Continue an earlier trace: that trace's seed ("txid", "txid:vout" or
+    /// "txid → address"), recorded in the report's settings.
+    #[serde(default)]
+    pub continued_from: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]

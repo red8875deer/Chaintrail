@@ -34,6 +34,10 @@ pub struct TraceConfig {
     /// trace's amounts are allocations from the start.
     #[serde(default)]
     pub mixed_in: Option<String>,
+    /// Continue an earlier trace: that trace's seed, kept for the record so exports can be
+    /// followed back to it. It does not change what is traced.
+    #[serde(default)]
+    pub continued_from: Option<String>,
 }
 
 impl Default for TraceConfig {
@@ -47,6 +51,7 @@ impl Default for TraceConfig {
             stop_confidence: Confidence::Medium,
             seed_share: None,
             mixed_in: None,
+            continued_from: None,
         }
     }
 }

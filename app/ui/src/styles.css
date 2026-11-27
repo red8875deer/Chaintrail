@@ -1265,3 +1265,21 @@ table.ledger a:hover,
   box-shadow: var(--shadow);
   font-size: 0.9rem;
 }
+
+/* Long ids (txids, addresses) wrap instead of widening the details. */
+.details {
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
+}
+.details p,
+.details li,
+.details .mono,
+.details dd,
+.evidence li {
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+.details-anchor {
+  min-width: 0;
+  max-width: 100%;
+}

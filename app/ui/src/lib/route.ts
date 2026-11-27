@@ -17,6 +17,8 @@ export interface TraceParams {
   share?: number;
   /** Continuing an earlier trace whose funds were mixed in this transaction. */
   mixed?: string;
+  /** Continuing an earlier trace: its seed, for the record. */
+  from?: string;
   /** Start the trace immediately. */
   run?: boolean;
 }
@@ -60,6 +62,7 @@ export function parseRoute(hash: string): Route {
           checkAddresses: q.get("check") === "0" ? false : undefined,
           share: num("share"),
           mixed: q.get("mixed") ?? undefined,
+          from: q.get("from") ?? undefined,
           run: q.get("run") === "1",
         },
       };
@@ -91,6 +94,7 @@ export function href(route: Route): string {
       if (p.checkAddresses === false) q.set("check", "0");
       if (p.share !== undefined) q.set("share", String(p.share));
       if (p.mixed) q.set("mixed", p.mixed);
+      if (p.from) q.set("from", p.from);
       if (p.run) q.set("run", "1");
       return `#/trace?${q.toString()}`;
     }

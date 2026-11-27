@@ -9,7 +9,7 @@ import { type GraphControls, GraphCanvas, type Selection } from "../components/G
 import { LeadsPanel } from "../components/LeadsPanel";
 import { Legend } from "../components/Legend";
 import { exportCsv, exportJson, exportPng } from "../lib/export";
-import { extractId, formatElapsed, formatInt, parseBtc } from "../lib/format";
+import { extractId, formatBtc, formatElapsed, formatInt, parseBtc, shortSeed } from "../lib/format";
 import { buildDisplay, defaultMinShareBp, displayPath, isGroupId, leadPath, leadSpine, nodeForLead } from "../lib/graph";
 import { DEFAULT_MAX_HOPS, DEFAULT_MAX_TXS, type TraceParams, href, parseRoute, sameTrace } from "../lib/route";
 
@@ -29,6 +29,8 @@ interface FormState {
   /** Continuing an earlier trace: its share of the seed (sats) and earlier mixing. */
   share?: number;
   mixed?: string;
+  /** The earlier trace's seed, for the record. */
+  from?: string;
 }
 
 function fromParams(p: TraceParams | null): FormState {
@@ -43,6 +45,7 @@ function fromParams(p: TraceParams | null): FormState {
     checkAddresses: p?.checkAddresses ?? true,
     share: p?.share,
     mixed: p?.mixed,
+    from: p?.from,
   };
 }
 
@@ -78,6 +81,7 @@ function toRequest(f: FormState): TraceRequest | string {
     check_addresses: f.checkAddresses,
     share_sats: f.share ?? null,
     mixed_in: f.mixed ?? null,
+    continued_from: f.from ?? null,
   };
 }
 
@@ -128,6 +132,7 @@ export function TraceView({ params }: { params: TraceParams | null }) {
       checkAddresses: req.check_addresses ?? undefined,
       share: f.share,
       mixed: f.mixed,
+      from: f.from,
       run: true,
     };
     const current = parseRoute(window.location.hash);
@@ -195,7 +200,7 @@ export function TraceView({ params }: { params: TraceParams | null }) {
   const set = <K extends keyof FormState>(k: K, v: FormState[K]) =>
     setForm((f) => {
       const seedChanged = k === "txid" || k === "vout" || k === "to" || k === "direction";
-      return { ...f, [k]: v, ...(seedChanged ? { share: undefined, mixed: undefined } : {}) };
+      return { ...f, [k]: v, ...(seedChanged ? { share: undefined, mixed: undefined, from: undefined } : {}) };
     });
 
   // What is drawn: small flows hidden, small branches grouped. The main route to every lead
@@ -247,6 +252,14 @@ export function TraceView({ params }: { params: TraceParams | null }) {
     if (g) setViewTarget({ ids: g.members });
   };
 
+  // Many small branches were not followed: trace again with a tenth of the minimum.
+  const lowerMinimum = () => {
+    if (!view) return;
+    const min = Math.max(1, Math.floor(view.report.min_amount / 10));
+    const current = parseRoute(window.location.hash);
+    void run({ ...fromParams(current.page === "trace" ? current.params : null), minBtc: formatBtc(min, 8) });
+  };
+
   const selectLead = (i: number) => {
     setSelectedLead((cur) => (cur === i ? null : i));
     setSelection(null);
@@ -296,12 +309,14 @@ export function TraceView({ params }: { params: TraceParams | null }) {
         </button>
         {form.share !== undefined && (
           <p className="continuation" role="note">
-            Continuing an earlier trace: following only <Btc sats={form.share} /> of this output, the share that came
-            from it{form.mixed ? " (already mixed with other funds, so amounts are pro-rata shares)" : ""}.{" "}
+            Continuing {form.from ? <>the trace from <span className="mono">{shortSeed(form.from)}</span></> : "an earlier trace"}:
+            following only <Btc sats={form.share} /> of this output, the share that came from it
+            {form.mixed ? " (already mixed with other funds, so amounts are pro-rata shares)" : ""}.{" "}
             <button
               type="button"
               className="btn subtle"
-              onClick={() => setForm((f) => ({ ...f, share: undefined, mixed: undefined }))}
+              disabled={running}
+              onClick={() => void run({ ...form, share: undefined, mixed: undefined })}
             >
               Trace the whole output instead
             </button>
@@ -454,7 +469,12 @@ export function TraceView({ params }: { params: TraceParams | null }) {
                     document.querySelector<HTMLElement>(".canvas")?.focus();
                   }}
                 />
-                <LeadsPanel view={view} selectedLead={selectedLead} onSelectLead={selectLead} />
+                <LeadsPanel
+                  view={view}
+                  selectedLead={selectedLead}
+                  onSelectLead={selectLead}
+                  onLowerMinimum={running || view.report.min_amount <= 1 ? undefined : lowerMinimum}
+                />
                 <div className="callout">
                   Leads are leads, not proof. Anything inferred or taken from a label is marked as such; check it
                   before acting on it.

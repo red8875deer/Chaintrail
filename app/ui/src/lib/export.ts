@@ -55,7 +55,12 @@ export function settingsText(view: TraceView): string {
     `allocation ${r.allocation}`,
   ];
   if (c.seed_share !== null && c.seed_share !== undefined)
-    parts.push(`continued from an earlier trace with its share of the seed`);
+    parts.push(
+      c.continued_from
+        ? `continued from the trace of ${c.continued_from}, following only its share of the seed`
+        : `continued from an earlier trace, following only its share of the seed`,
+    );
+  else if (c.continued_from) parts.push(`continued from the trace of ${c.continued_from}`);
   if (c.mixed_in) parts.push(`funds already mixed in ${c.mixed_in}`);
   return parts.join("; ");
 }

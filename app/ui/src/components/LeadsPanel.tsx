@@ -131,8 +131,15 @@ function buckets(view: TraceView): Bucket[] {
   }
   const order = (b: Bucket) => (b.key.startsWith("cat:") ? 0 : b.key === "mined" ? 1 : b.key === "at_rest" ? 2 : 3);
   const list = [...map.values()].sort((a, b) => order(a) - order(b) || b.amount - a.amount);
-  const rest = r.stats.fees + r.stats.below_threshold;
-  if (rest > 0) list.push({ key: "rest", name: "Fees and small branches", colour: "var(--rule)", amount: rest, leads: 0 });
+  if (r.stats.below_threshold > 0)
+    list.push({
+      key: "small",
+      name: "Small branches not followed",
+      colour: "repeating-linear-gradient(135deg, var(--rule) 0 3px, var(--surface-2) 3px 6px)",
+      amount: r.stats.below_threshold,
+      leads: 0,
+    });
+  if (r.stats.fees > 0) list.push({ key: "fees", name: "Fees", colour: "var(--rule)", amount: r.stats.fees, leads: 0 });
   return list;
 }
 
@@ -141,10 +148,12 @@ function Exposure({
   view,
   filter,
   onFilter,
+  onLowerMinimum,
 }: {
   view: TraceView;
   filter: string | null;
   onFilter: (key: string | null) => void;
+  onLowerMinimum?: () => void;
 }) {
   const total = view.report.seed_amount;
   const list = buckets(view);
@@ -169,8 +178,14 @@ function Exposure({
               type="button"
               className="exposure-row"
               aria-pressed={filter === b.key}
-              disabled={b.key === "rest"}
-              title={b.key === "rest" ? "Not a lead: paid as fees, or branches too small to follow" : "Show only these leads"}
+              disabled={b.key === "fees" || b.key === "small"}
+              title={
+                b.key === "fees"
+                  ? "Not a lead: paid as transaction fees"
+                  : b.key === "small"
+                    ? `Not a lead: branches under the minimum of ${formatBtc(view.report.min_amount, 8)} BTC were not followed`
+                    : "Show only these leads"
+              }
               onClick={() => onFilter(filter === b.key ? null : b.key)}
             >
               <span className="swatch" style={{ background: b.colour }} />
@@ -186,9 +201,21 @@ function Exposure({
           </li>
         ))}
       </ul>
+      {onLowerMinimum && Number(shareBasisPoints(view.report.stats.below_threshold, total)) >= SMALL_BRANCHES_WARN_BP && (
+        <p className="callout small">
+          {formatShare(view.report.stats.below_threshold, total)} of the traced amount went into branches smaller than{" "}
+          <Btc sats={view.report.min_amount} />, which were not followed.{" "}
+          <button type="button" className="btn subtle" onClick={onLowerMinimum}>
+            Follow smaller branches
+          </button>
+        </p>
+      )}
     </section>
   );
 }
+
+/** Above this share of the seed in unfollowed small branches, offer a re-run with a lower minimum. */
+const SMALL_BRANCHES_WARN_BP = 500;
 
 /** Arrow keys, Home and End move through a list of leads and select (one Tab stop). */
 function listKeys(onSelect: (i: number) => void) {
@@ -209,10 +236,13 @@ export function LeadsPanel({
   view,
   selectedLead,
   onSelectLead,
+  onLowerMinimum,
 }: {
   view: TraceView;
   selectedLead: number | null;
   onSelectLead: (i: number) => void;
+  /** Trace again with a lower minimum branch size. */
+  onLowerMinimum?: () => void;
 }) {
   const r = view.report;
   const [showOpen, setShowOpen] = useState(false);
@@ -254,7 +284,7 @@ export function LeadsPanel({
         </p>
       </section>
 
-      <Exposure view={view} filter={filter} onFilter={setFilter} />
+      <Exposure view={view} filter={filter} onFilter={setFilter} onLowerMinimum={onLowerMinimum} />
 
       <section aria-label="Leads">
         <h2 style={{ marginBottom: 8 }}>{forward ? "Where the funds ended up" : "Where the funds came from"}</h2>

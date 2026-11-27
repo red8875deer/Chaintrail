@@ -2,7 +2,7 @@
 
 import { useEffect, useRef } from "react";
 import type { Claim, GraphNode, Lead, TraceView } from "../api/types";
-import { formatBtcShort, formatShare, formatUtc } from "../lib/format";
+import { formatBtcShort, formatShare, formatUtc, shortId } from "../lib/format";
 import { type Display, edgeById, isGroupId, leadPath, nodeById, nodeForLead } from "../lib/graph";
 import { categoryName, describeClaim, leadKindExplanation, leadKindName, roleText } from "../lib/meaning";
 import { type TraceParams, href } from "../lib/route";
@@ -65,6 +65,7 @@ function nextTrace(
           direction: r.direction,
           share: lead.amount,
           mixed: lead.mixed_in ?? undefined,
+          from: r.seed,
           run: true,
         },
       };
@@ -86,6 +87,7 @@ function nextTrace(
           direction: "forward",
           share: lead.amount,
           mixed: lead.mixed_in ?? deposit.txid,
+          from: r.seed,
           run: true,
         },
       };
@@ -94,10 +96,16 @@ function nextTrace(
   if (!node.address) return null;
   // An address on the way: continue from the largest transfer into it (forward) or out of
   // it (backward), with that transfer's traced amount.
-  const edge = view.graph.edges
+  const edges = view.graph.edges
     .filter((e) => e.source !== e.target && (forward ? e.target === node.id : e.source === node.id))
-    .sort((a, b) => b.amount - a.amount)[0];
+    .sort((a, b) => b.amount - a.amount);
+  const edge = edges[0];
   if (!edge) return null;
+  const others = new Set(edges.map((e) => e.txid)).size - 1;
+  const caution =
+    others > 0
+      ? `Continues from the largest transfer ${forward ? "into" : "out of"} this address (transaction ${shortId(edge.txid)}) only; the ${others} other${others === 1 ? "" : "s"} would be separate traces.`
+      : undefined;
   const flows = r.flows.filter(
     (f) => f.txid === edge.txid && (forward ? f.to?.value === node.address : f.from?.value === node.address),
   );
@@ -107,12 +115,14 @@ function nextTrace(
     // there), so an output traced in full is continued in full.
     return {
       label: again,
+      caution,
       params: {
         txid: edge.txid,
         to: node.address,
         direction: "forward",
         share: flows.reduce((sum, f) => sum + f.amount, 0) || edge.amount,
         mixed: flows.find((f) => f.mixed_in)?.mixed_in ?? undefined,
+        from: r.seed,
         run: true,
       },
     };
@@ -121,12 +131,14 @@ function nextTrace(
   if (!coin || coin.length !== 2) return null;
   return {
     label: again,
+    caution,
     params: {
       txid: coin[0]!,
       vout: Number(coin[1]),
       direction: "backward",
       share: edge.amount,
       mixed: flow?.mixed_in ?? undefined,
+      from: r.seed,
       run: true,
     },
   };

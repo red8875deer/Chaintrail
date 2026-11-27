@@ -259,6 +259,11 @@ impl AppService {
             check_addresses: req.check_addresses.unwrap_or(true),
             seed_share: req.share_sats.filter(|s| *s > 0),
             mixed_in: req.mixed_in.as_deref().map(normalize_txid).transpose()?,
+            continued_from: req
+                .continued_from
+                .as_deref()
+                .map(normalize_seed)
+                .transpose()?,
             ..defaults
         };
         let labels = self.labels();
@@ -340,6 +345,36 @@ impl AppService {
             path: path.display().to_string(),
         })
     }
+}
+
+/// A trace seed as written in reports ("txid", "txid:vout" or "txid → address"), checked and
+/// normalised so only a real seed is recorded as the trace a continuation came from.
+fn normalize_seed(text: &str) -> Result<String> {
+    let (tx, address) = match text.split_once('→') {
+        Some((tx, address)) => (tx.trim(), Some(address.trim())),
+        None => (text.trim(), None),
+    };
+    let (txid, vout) = match tx.split_once(':') {
+        Some((txid, vout)) => {
+            let vout: u32 = vout
+                .parse()
+                .map_err(|_| ServiceError::invalid(format!("not an output number: {vout}")))?;
+            (txid, Some(vout))
+        }
+        None => (tx, None),
+    };
+    let txid = normalize_txid(txid)?;
+    Ok(match (vout, address) {
+        (Some(_), Some(_)) => {
+            return Err(ServiceError::invalid(format!("not a trace seed: {text}")));
+        }
+        (Some(vout), None) => format!("{txid}:{vout}"),
+        (None, Some(address)) => format!(
+            "{txid} → {}",
+            Address::parse(Chain::Bitcoin, address)?.as_str()
+        ),
+        (None, None) => txid,
+    })
 }
 
 fn label_view(r: &LabelRecord) -> LabelView {
@@ -464,6 +499,7 @@ mod tests {
                     check_addresses: Some(false),
                     share_sats: None,
                     mixed_in: None,
+                    continued_from: None,
                 },
                 &mut |_| {},
             )
@@ -487,6 +523,10 @@ mod tests {
                     check_addresses: Some(false),
                     share_sats: Some(share),
                     mixed_in: Some(txid(9)),
+                    continued_from: Some(format!(
+                        "{} → 1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2",
+                        txid(7).to_uppercase()
+                    )),
                 },
                 &mut |_| {},
             )
@@ -496,6 +536,10 @@ mod tests {
         assert_eq!(c.report.accounted(), share);
         assert_eq!(c.report.config.seed_share, Some(share));
         assert!(c.report.leads.iter().all(|l| l.mixed_in == Some(txid(9))));
+        assert_eq!(
+            c.report.config.continued_from,
+            Some(format!("{} → 1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2", txid(7)))
+        );
         let bad = s
             .btc_trace(
                 TraceRequest {
@@ -509,6 +553,7 @@ mod tests {
                     check_addresses: None,
                     share_sats: None,
                     mixed_in: None,
+                    continued_from: None,
                 },
                 &mut |_| {},
             )

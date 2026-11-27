@@ -217,6 +217,8 @@ export interface TraceRequest {
   share_sats?: number | null;
   /** Continue an earlier trace whose funds were mixed in this transaction. */
   mixed_in?: string | null;
+  /** Continue an earlier trace: that trace's seed, recorded in the settings. */
+  continued_from?: string | null;
 }
 
 export type StopReason =
@@ -302,6 +304,8 @@ export interface TraceConfig {
   seed_share?: number | null;
   /** Continuing an earlier trace whose funds were mixed in this transaction. */
   mixed_in?: string | null;
+  /** Continuing an earlier trace: that trace's seed (for the record only). */
+  continued_from?: string | null;
 }
 
 /** One output of the seed transaction included in the trace. */
