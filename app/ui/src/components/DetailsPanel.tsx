@@ -98,18 +98,21 @@ function nextTrace(
     .filter((e) => e.source !== e.target && (forward ? e.target === node.id : e.source === node.id))
     .sort((a, b) => b.amount - a.amount)[0];
   if (!edge) return null;
-  const flow = r.flows.find(
+  const flows = r.flows.filter(
     (f) => f.txid === edge.txid && (forward ? f.to?.value === node.address : f.from?.value === node.address),
   );
+  const flow = flows[0];
   if (forward) {
+    // Everything this transaction's traced funds paid to the address (all its outputs
+    // there), so an output traced in full is continued in full.
     return {
       label: again,
       params: {
         txid: edge.txid,
         to: node.address,
         direction: "forward",
-        share: edge.amount,
-        mixed: flow?.mixed_in ?? undefined,
+        share: flows.reduce((sum, f) => sum + f.amount, 0) || edge.amount,
+        mixed: flows.find((f) => f.mixed_in)?.mixed_in ?? undefined,
         run: true,
       },
     };

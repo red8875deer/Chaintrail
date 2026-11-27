@@ -56,10 +56,12 @@ confidence and the evidence.
   together with many other addresses is not a service stop either (a scammer gathering
   victims' payments looks the same; the note on the edge says both readings). Its label,
   if any, is listed. Backward, a start transaction that is a service payout does stop: that
-  is where the funds came from.
+  is where the funds came from; a consolidation at the start does not (its inputs are).
 - **Hops** are counted the same way in both directions: a lead is at most `max-hops`
   transactions away from the seed. Each coin keeps the shortest route by which the funds
-  reached it, and its hop count and path always agree.
+  reached it, and its hop count and path always agree. Branches are followed largest
+  first, so a coin can first arrive by a long route: one stopped at the hop limit is
+  checked again at the end and followed if a shorter route reached it meanwhile.
 - **Backward**, each traced output of a transaction is credited only with what it received,
   and a whole transaction traced back is drawn as the transaction itself. Funds from a
   CoinJoin or a service payout are drawn as coming from that transaction (not from one of
@@ -70,7 +72,8 @@ confidence and the evidence.
 - **Accounting always balances:** leads + fees + small branches = the traced amount.
   Forward, fees and rounding go to "fees". Backward, rounding goes to the largest input.
 - Leads that stop because of limits or data errors are reported as **not followed**,
-  separately from real endpoints, one per coin (`txid:vout`), so each can be continued.
+  separately from real endpoints. They and funds at rest are one lead per coin
+  (`txid:vout`), so each can be continued, or frozen, exactly.
 
 ### Labels during a trace
 
@@ -189,6 +192,9 @@ carry the traced funds? Selectable rules:
 | **LIBR** | Lowest intermediate balance rule |
 
 The default for automatic tracing is **pro-rata** (no single payment is overstated).
+Shares are rounded down to the satoshi (within one split, the remainder goes to the largest
+output); what rounding loses is counted as fees, so amounts can be a few satoshis below a
+coin's value when several traced coins meet in one transaction.
 The rule used is recorded with every trace.
 
 ## 6. Confidence
@@ -204,8 +210,9 @@ A path's confidence is the **lowest** confidence of any hop on it.
 
 **Amounts after mixing are allocations, not facts.** A lead's amount is an on-chain fact
 only if the traced funds were never mixed with other funds on the way (forward: every input
-of each transaction was traced funds; backward: the traced outputs were all the transaction
-paid). After mixing, amounts are pro-rata shares: the lead records the transaction where the
+of each transaction was traced funds; backward: every output with value was traced; fees
+are not other funds). A trace continued with only part of an output starts as an
+allocation. After mixing, amounts are pro-rata shares: the lead records the transaction where the
 funds were first mixed (`mixed_in`), shows "pro-rata share", and a lead that would be a
 fact (funds at rest, not followed) becomes an inference about the amount (Medium) whose
 evidence names that transaction. Identifications (labels, service and CoinJoin detection)

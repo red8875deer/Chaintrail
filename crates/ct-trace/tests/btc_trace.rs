@@ -1256,3 +1256,196 @@ async fn backward_leads_respect_the_hop_limit() {
     assert_eq!(nf.txid, Some(txid(20)));
     assert_eq!(nf.vout, Some(0));
 }
+
+#[tokio::test]
+async fn backward_fees_are_not_mixing() {
+    // One input, one output at every step: only fees leave. Amounts stay facts.
+    let t20 = tx(
+        &txid(20),
+        100,
+        &[(&txid(19), 0, &addr(29), BTC)],
+        &[(&addr(30), BTC - 1_000)],
+    );
+    let t21 = tx(
+        &txid(21),
+        101,
+        &[(&txid(20), 0, &addr(30), BTC - 1_000)],
+        &[(&addr(40), BTC - 2_000)],
+    );
+    let p = MemoryBitcoin::new([t20, t21]);
+    let r = run(
+        &p,
+        Seed::Output {
+            txid: txid(21),
+            vout: 0,
+        },
+        TraceConfig {
+            direction: Direction::Backward,
+            max_hops: 2,
+            min_amount: Some(1),
+            ..Default::default()
+        },
+    )
+    .await;
+    assert!(
+        r.leads.iter().all(|l| l.mixed_in.is_none()),
+        "{:#?}",
+        r.leads
+    );
+    assert!(r.flows.iter().all(|f| f.mixed_in.is_none()));
+}
+
+#[tokio::test]
+async fn following_a_share_of_an_output_is_an_allocation() {
+    let t2 = tx(
+        &txid(2),
+        101,
+        &[(&txid(1), 0, &addr(2), BTC)],
+        &[(&addr(3), BTC - 10_000)],
+    );
+    let p = MemoryBitcoin::new([victim_payment(), t2]);
+    let r = run(
+        &p,
+        Seed::Output {
+            txid: txid(1),
+            vout: 0,
+        },
+        TraceConfig {
+            seed_share: Some(BTC / 2),
+            ..forward()
+        },
+    )
+    .await;
+    assert_eq!(r.seed_amount, BTC / 2);
+    // The rest of the output is other funds: the seed transaction is where they mix.
+    assert!(
+        r.leads.iter().all(|l| l.mixed_in == Some(txid(1))),
+        "{:#?}",
+        r.leads
+    );
+    assert!(r.leads.iter().all(|l| l.claim != Claim::Fact));
+}
+
+#[tokio::test]
+async fn funds_at_rest_are_one_lead_per_coin() {
+    let t2 = tx(
+        &txid(2),
+        101,
+        &[(&txid(1), 0, &addr(2), BTC)],
+        &[(&addr(3), BTC / 2), (&addr(3), BTC / 2 - 10_000)],
+    );
+    let p = MemoryBitcoin::new([victim_payment(), t2]);
+    let r = run(
+        &p,
+        Seed::Output {
+            txid: txid(1),
+            vout: 0,
+        },
+        forward(),
+    )
+    .await;
+    let rest: Vec<_> = r
+        .leads
+        .iter()
+        .filter(|l| l.kind == LeadKind::AtRest)
+        .collect();
+    assert_eq!(rest.len(), 2, "{rest:#?}");
+    let mut vouts: Vec<_> = rest.iter().map(|l| l.vout).collect();
+    vouts.sort();
+    assert_eq!(vouts, vec![Some(0), Some(1)]);
+    assert_eq!(rest.iter().map(|l| l.amount).sum::<u64>(), BTC - 10_000);
+}
+
+#[tokio::test]
+async fn a_coin_reached_by_a_shorter_route_is_not_stopped_by_the_hop_limit() {
+    // T1 splits 90/10 to A and B. A goes on through T2 to C. T3 spends C (hop 2) and B
+    // (hop 1) together into O, which T4 spends to P. The big part reaches O by the longer
+    // route first; O is still within 3 hops by the shorter one.
+    let t1 = tx(
+        &txid(31),
+        101,
+        &[(&txid(1), 0, &addr(2), BTC)],
+        &[(&addr(50), 9 * BTC / 10), (&addr(51), BTC / 10 - 1_000)],
+    );
+    let t2 = tx(
+        &txid(32),
+        102,
+        &[(&txid(31), 0, &addr(50), 9 * BTC / 10)],
+        &[(&addr(52), 9 * BTC / 10 - 1_000)],
+    );
+    let t3 = tx(
+        &txid(33),
+        103,
+        &[
+            (&txid(32), 0, &addr(52), 9 * BTC / 10 - 1_000),
+            (&txid(31), 1, &addr(51), BTC / 10 - 1_000),
+        ],
+        &[(&addr(53), BTC - 3_000)],
+    );
+    let t4 = tx(
+        &txid(34),
+        104,
+        &[(&txid(33), 0, &addr(53), BTC - 3_000)],
+        &[(&addr(54), BTC - 4_000)],
+    );
+    let p = MemoryBitcoin::new([victim_payment(), t1, t2, t3, t4]);
+    let r = run(
+        &p,
+        Seed::Output {
+            txid: txid(1),
+            vout: 0,
+        },
+        TraceConfig {
+            max_hops: 3,
+            ..forward()
+        },
+    )
+    .await;
+    // Nothing is left "not followed" at O: all of it went on to P.
+    assert!(
+        r.leads
+            .iter()
+            .all(|l| !(matches!(l.kind, LeadKind::Unexplored { .. }) && l.txid == Some(txid(33)))),
+        "{:#?}",
+        r.leads
+    );
+    let at_p: u64 = r
+        .leads
+        .iter()
+        .filter(|l| l.address == Some(addr(54)))
+        .map(|l| l.amount)
+        .sum();
+    // All of it (pro-rata shares are rounded down to the sat; rounding goes to fees).
+    assert!((BTC - 4_000 - 5..=BTC - 4_000).contains(&at_p), "{at_p}");
+}
+
+#[tokio::test]
+async fn backward_from_a_consolidation_follows_its_inputs() {
+    let mut ins: Vec<(String, u32, ct_core::Address, u64)> = Vec::new();
+    for i in 0..60u8 {
+        ins.push((txid(1000 + i as u32), 0, addr(100 + i), 1_000_000));
+    }
+    let ins_ref: Vec<(&str, u32, &ct_core::Address, u64)> = ins
+        .iter()
+        .map(|(t, v, a, x)| (t.as_str(), *v, a, *x))
+        .collect();
+    let sweep = tx(&txid(3), 102, &ins_ref, &[(&addr(250), 59_000_000)]);
+    let p = MemoryBitcoin::new([sweep]);
+    let r = run(
+        &p,
+        Seed::Output {
+            txid: txid(3),
+            vout: 0,
+        },
+        TraceConfig {
+            direction: Direction::Backward,
+            max_hops: 1,
+            min_amount: Some(1),
+            ..Default::default()
+        },
+    )
+    .await;
+    // Not one "service" lead at the start: the 60 inputs are where the funds came from.
+    assert!(r.leads.iter().all(|l| l.hops >= 1), "{:#?}", r.leads);
+    assert_eq!(r.flows.iter().filter(|f| f.txid == txid(3)).count(), 60);
+}

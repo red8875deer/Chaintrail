@@ -122,6 +122,12 @@ pub async fn trace_bitcoin(
     let seed_amount = config
         .seed_share
         .map_or(full_amount, |s| s.min(full_amount));
+    // Following only a share of the seed: the rest of it is other funds, so amounts are
+    // allocations from the start (named by the earlier trace's mixing if known).
+    let carried_mixing = config
+        .mixed_in
+        .clone()
+        .or_else(|| (seed_amount < full_amount).then(|| seed_tx.txid.clone()));
     // The seed outputs' traced amounts: their values, scaled to the share (remainder to the
     // first so they add up exactly).
     let traced_values: Vec<u64> = {
@@ -172,7 +178,7 @@ pub async fn trace_bitcoin(
                     hop: 0,
                     time: block_time(&seed_tx),
                     path: vec![seed_tx.txid.clone()],
-                    mixed_at: config.mixed_in.clone(),
+                    mixed_at: carried_mixing.clone(),
                 })
                 .collect();
             t.forward(coins, min_amount, progress).await;
@@ -200,7 +206,7 @@ pub async fn trace_bitcoin(
                 hop: 0,
                 receivers,
                 path: vec![seed_tx.txid.clone()],
-                mixed_at: config.mixed_in.clone(),
+                mixed_at: carried_mixing.clone(),
             };
             t.backward(vec![source], min_amount, progress).await;
         }
@@ -658,9 +664,12 @@ impl<'a> Tracer<'a> {
             (None, Some(t)) => t.clone(),
             (None, None) => String::new(),
         };
-        // Branches not followed stay one lead per coin, so each can be picked up exactly.
+        // Branches not followed and funds at rest stay one lead per coin, so each can be
+        // picked up (or frozen) exactly.
         let coin = match (&kind, &txid, vout) {
-            (LeadKind::Unexplored { .. }, Some(t), Some(v)) => format!("{t}:{v}"),
+            (LeadKind::Unexplored { .. } | LeadKind::AtRest, Some(t), Some(v)) => {
+                format!("{t}:{v}")
+            }
             _ => String::new(),
         };
         let key = format!("{tag}|{place}|{title}|{coin}");
@@ -673,7 +682,11 @@ impl<'a> Tracer<'a> {
                 lead.confidence = lead.confidence.min(lead.claim.confidence());
             }
             lead.amount += amount;
-            lead.hops = lead.hops.min(hops);
+            // Hops and path always describe the same (shortest) route.
+            if hops < lead.hops {
+                lead.hops = hops;
+                lead.path = path.to_vec();
+            }
             lead.first_time = match (lead.first_time, time) {
                 (Some(a), Some(b)) => Some(a.min(b)),
                 (a, b) => a.or(b),
@@ -780,21 +793,47 @@ impl<'a> Tracer<'a> {
             push(&mut pending, &mut best, c);
         }
 
-        while let Some(coin) = pop_largest(&mut pending, |c| c.amount) {
-            self.via = coin.address.clone();
-            self.mixed_in = coin.mixed_at.clone();
-            progress(Progress {
-                txs_examined: self.stats.txs_examined,
-                pending: pending.len(),
-                leads: self.leads.len(),
-            });
-            if coin.amount < min_amount {
-                // A small amount reaching an address already known as an endpoint still
-                // belongs to it (e.g. a test payment before the main deposit). Only what is
-                // already known is used: no extra lookups for small amounts.
+        let mut deferred: Vec<Coin> = Vec::new();
+        loop {
+            while let Some(coin) = pop_largest(&mut pending, |c| c.amount) {
+                self.via = coin.address.clone();
+                self.mixed_in = coin.mixed_at.clone();
+                progress(Progress {
+                    txs_examined: self.stats.txs_examined,
+                    pending: pending.len(),
+                    leads: self.leads.len(),
+                });
+                if coin.amount < min_amount {
+                    // A small amount reaching an address already known as an endpoint still
+                    // belongs to it (e.g. a test payment before the main deposit). Only what is
+                    // already known is used: no extra lookups for small amounts.
+                    if coin.hop > 0
+                        && let Some(addr) = coin.address.clone()
+                        && let Some((title, category, claim)) = self.known_endpoint(&addr)
+                    {
+                        self.add_lead(
+                            LeadKind::Endpoint,
+                            title,
+                            Some(category),
+                            Some(addr),
+                            Some(coin.txid.clone()),
+                            None,
+                            coin.amount,
+                            coin.time,
+                            coin.hop,
+                            claim,
+                            &coin.path,
+                        );
+                        continue;
+                    }
+                    self.stats.below_threshold += coin.amount;
+                    continue;
+                }
+                // Endpoint at the address holding the coin (not for the seed itself: the user
+                // chose to trace from there).
                 if coin.hop > 0
                     && let Some(addr) = coin.address.clone()
-                    && let Some((title, category, claim)) = self.known_endpoint(&addr)
+                    && let Some((title, category, claim)) = self.endpoint_for(&addr).await
                 {
                     self.add_lead(
                         LeadKind::Endpoint,
@@ -811,35 +850,47 @@ impl<'a> Tracer<'a> {
                     );
                     continue;
                 }
-                self.stats.below_threshold += coin.amount;
-                continue;
-            }
-            // Endpoint at the address holding the coin (not for the seed itself: the user
-            // chose to trace from there).
-            if coin.hop > 0
-                && let Some(addr) = coin.address.clone()
-                && let Some((title, category, claim)) = self.endpoint_for(&addr).await
-            {
-                self.add_lead(
-                    LeadKind::Endpoint,
-                    title,
-                    Some(category),
-                    Some(addr),
-                    Some(coin.txid.clone()),
-                    None,
-                    coin.amount,
-                    coin.time,
-                    coin.hop,
-                    claim,
-                    &coin.path,
-                );
-                continue;
-            }
-            let spend = match self.outspend(&coin.txid, coin.vout).await {
-                Ok(s) => s,
-                Err(e) => {
+                let spend = match self.outspend(&coin.txid, coin.vout).await {
+                    Ok(s) => s,
+                    Err(e) => {
+                        self.unexplored(
+                            StopReason::Error(e.to_string()),
+                            coin.address.clone(),
+                            &coin.txid,
+                            Some(coin.vout),
+                            coin.amount,
+                            coin.time,
+                            coin.hop,
+                            &coin.path,
+                        );
+                        continue;
+                    }
+                };
+                let Some(spending_txid) = spend.spending_txid.clone().filter(|_| spend.spent)
+                else {
+                    self.add_lead(
+                        LeadKind::AtRest,
+                        "Funds at rest (unspent)".into(),
+                        None,
+                        coin.address.clone(),
+                        Some(coin.txid.clone()),
+                        Some(coin.vout),
+                        coin.amount,
+                        coin.time,
+                        coin.hop,
+                        Claim::Fact,
+                        &coin.path,
+                    );
+                    continue;
+                };
+                if coin.hop >= self.config.max_hops {
+                    // Decided at the end: a shorter route to this coin may still turn up.
+                    deferred.push(coin);
+                    continue;
+                }
+                if !self.budget_left(&spending_txid) {
                     self.unexplored(
-                        StopReason::Error(e.to_string()),
+                        StopReason::Budget,
                         coin.address.clone(),
                         &coin.txid,
                         Some(coin.vout),
@@ -850,238 +901,237 @@ impl<'a> Tracer<'a> {
                     );
                     continue;
                 }
-            };
-            let Some(spending_txid) = spend.spending_txid.clone().filter(|_| spend.spent) else {
-                self.add_lead(
-                    LeadKind::AtRest,
-                    "Funds at rest (unspent)".into(),
-                    None,
-                    coin.address.clone(),
-                    Some(coin.txid.clone()),
-                    Some(coin.vout),
-                    coin.amount,
-                    coin.time,
-                    coin.hop,
-                    Claim::Fact,
-                    &coin.path,
-                );
-                continue;
-            };
-            if coin.hop >= self.config.max_hops {
-                self.unexplored(
-                    StopReason::HopLimit,
-                    coin.address.clone(),
-                    &coin.txid,
-                    Some(coin.vout),
-                    coin.amount,
-                    coin.time,
-                    coin.hop,
-                    &coin.path,
-                );
-                continue;
-            }
-            if !self.budget_left(&spending_txid) {
-                self.unexplored(
-                    StopReason::Budget,
-                    coin.address.clone(),
-                    &coin.txid,
-                    Some(coin.vout),
-                    coin.amount,
-                    coin.time,
-                    coin.hop,
-                    &coin.path,
-                );
-                continue;
-            }
-            let stx = match self.tx(&spending_txid).await {
-                Ok(t) => t,
-                Err(e) => {
-                    self.unexplored(
-                        StopReason::Error(e.to_string()),
-                        coin.address.clone(),
-                        &coin.txid,
-                        Some(coin.vout),
-                        coin.amount,
-                        coin.time,
-                        coin.hop,
-                        &coin.path,
-                    );
-                    continue;
-                }
-            };
-            let mut path = coin.path.clone();
-            path.push(stx.txid.clone());
-            let time = block_time(&stx);
-            let hop = coin.hop + 1;
-
-            let shape = classify(&stx);
-            if let TxShape::CoinJoin(info) = &shape {
-                let mut evidence = info.evidence.clone();
-                let title = match self.name_mixer(&stx) {
-                    Some(l) => {
-                        evidence.push(format!(
-                            "{} in this transaction: {}",
-                            l.address,
-                            label_evidence(&l)
-                        ));
-                        format!("Likely mixed in {}: {}", l.entity, info.kind.label())
+                let stx = match self.tx(&spending_txid).await {
+                    Ok(t) => t,
+                    Err(e) => {
+                        self.unexplored(
+                            StopReason::Error(e.to_string()),
+                            coin.address.clone(),
+                            &coin.txid,
+                            Some(coin.vout),
+                            coin.amount,
+                            coin.time,
+                            coin.hop,
+                            &coin.path,
+                        );
+                        continue;
                     }
-                    None => format!("Likely mixed in {}", info.kind.label()),
                 };
-                // Each coin entering the CoinJoin gets its own edge to the transaction.
-                self.flows.push(Flow {
-                    txid: stx.txid.clone(),
-                    hop,
-                    time,
-                    from: coin.address.clone(),
-                    to: None,
-                    from_coin: Some(format!("{}:{}", coin.txid, coin.vout)),
-                    to_coin: Some(stx.txid.clone()),
-                    amount: coin.amount,
-                    role: FlowRole::Payment,
-                    peel: false,
-                    note: Some(shape.describe()),
-                    mixed_in: self.mixed_in.clone(),
-                });
-                self.add_lead(
-                    LeadKind::Endpoint,
-                    title,
-                    Some(EntityCategory::Mixer),
-                    None,
-                    Some(stx.txid.clone()),
-                    None,
-                    coin.amount,
-                    time,
-                    hop,
-                    Claim::Inference {
-                        heuristic: "coinjoin".into(),
-                        confidence: info.confidence,
-                        evidence,
-                    },
-                    &path,
-                );
-                continue;
-            }
-            // Not for the seed coin: the user chose to trace from there (a scammer's address
-            // that sweeps many victims' payments is not a service).
-            let (service, dormant_note) =
-                at_start(coin.hop, self.service_shape(&stx, &shape).await, &shape);
-            if let Some(conf) = service {
-                let what = match &shape {
-                    TxShape::Consolidation {
-                        distinct_inputs, ..
-                    } => format!(
-                        "deposit swept together with {} other addresses",
-                        distinct_inputs.saturating_sub(1)
-                    ),
-                    _ => format!("wallet paid out in a {}", shape.describe()),
-                };
-                let consolidation = matches!(shape, TxShape::Consolidation { .. });
-                let (title, category, claim) = match self.name_service(&stx, consolidation) {
-                    Some(n) => {
-                        let mut evidence = vec![shape.describe()];
-                        evidence.extend(n.evidence);
-                        (
-                            format!("Likely {}: {what}", label_title(&n.label)),
-                            n.label.category,
-                            Claim::Inference {
-                                heuristic: "label.same_wallet".into(),
-                                // Both the shape and the label must hold.
-                                confidence: n.confidence.min(conf),
-                                evidence,
-                            },
-                        )
-                    }
-                    None => (
-                        format!("Likely service: {what}"),
-                        EntityCategory::UnknownService,
-                        Claim::Inference {
-                            heuristic: "service.tx_shape".into(),
-                            confidence: conf,
-                            evidence: vec![shape.describe()],
-                        },
-                    ),
-                };
-                self.add_lead(
-                    LeadKind::Endpoint,
-                    title,
-                    Some(category),
-                    coin.address.clone(),
-                    Some(stx.txid.clone()),
-                    None,
-                    coin.amount,
-                    time,
-                    hop,
-                    claim,
-                    &path,
-                );
-                continue;
-            }
+                let mut path = coin.path.clone();
+                path.push(stx.txid.clone());
+                let time = block_time(&stx);
+                let hop = coin.hop + 1;
 
-            // Ordinary transaction: allocate pro-rata to outputs. If any input is not traced
-            // funds, the outputs' traced amounts are pro-rata shares from here on.
-            let total_in = stx.total_in().max(1) as u128;
-            let mixes = stx.inputs.iter().any(|i| match &i.prev_txid {
-                Some(t) => !best.contains_key(&format!("{t}:{}", i.prev_vout)),
-                None => true,
-            });
-            let mixed_at = coin
-                .mixed_at
-                .clone()
-                .or_else(|| mixes.then(|| stx.txid.clone()));
-            self.mixed_in = mixed_at.clone();
-            let change = detect_change(&stx);
-            let peel = is_peel_step(&stx, change.as_ref());
-            if peel {
-                self.stats.peel_steps += 1;
-            }
-            let note =
-                dormant_note.or_else(|| (shape != TxShape::Simple).then(|| shape.describe()));
-            let mut allocated = 0u64;
-            for o in stx.outputs.iter().filter(|o| o.script_type.is_spendable()) {
-                let share = (coin.amount as u128 * o.value as u128 / total_in) as u64;
-                if share == 0 {
-                    continue;
-                }
-                allocated += share;
-                let role = match &change {
-                    Some(c) if c.output == o.index && c.confidence.followable() => {
-                        FlowRole::Change {
-                            confidence: c.confidence,
+                let shape = classify(&stx);
+                if let TxShape::CoinJoin(info) = &shape {
+                    let mut evidence = info.evidence.clone();
+                    let title = match self.name_mixer(&stx) {
+                        Some(l) => {
+                            evidence.push(format!(
+                                "{} in this transaction: {}",
+                                l.address,
+                                label_evidence(&l)
+                            ));
+                            format!("Likely mixed in {}: {}", l.entity, info.kind.label())
                         }
-                    }
-                    _ => FlowRole::Payment,
-                };
-                self.flows.push(Flow {
-                    txid: stx.txid.clone(),
-                    hop,
-                    time,
-                    from: coin.address.clone(),
-                    to: o.address.clone(),
-                    from_coin: Some(format!("{}:{}", coin.txid, coin.vout)),
-                    to_coin: Some(format!("{}:{}", stx.txid, o.index)),
-                    amount: share,
-                    role,
-                    peel,
-                    note: note.clone(),
-                    mixed_in: self.mixed_in.clone(),
-                });
-                push(
-                    &mut pending,
-                    &mut best,
-                    Coin {
+                        None => format!("Likely mixed in {}", info.kind.label()),
+                    };
+                    // Each coin entering the CoinJoin gets its own edge to the transaction.
+                    self.flows.push(Flow {
                         txid: stx.txid.clone(),
-                        vout: o.index,
-                        address: o.address.clone(),
-                        amount: share,
                         hop,
                         time,
-                        path: path.clone(),
-                        mixed_at: mixed_at.clone(),
-                    },
-                );
+                        from: coin.address.clone(),
+                        to: None,
+                        from_coin: Some(format!("{}:{}", coin.txid, coin.vout)),
+                        to_coin: Some(stx.txid.clone()),
+                        amount: coin.amount,
+                        role: FlowRole::Payment,
+                        peel: false,
+                        note: Some(shape.describe()),
+                        mixed_in: self.mixed_in.clone(),
+                    });
+                    self.add_lead(
+                        LeadKind::Endpoint,
+                        title,
+                        Some(EntityCategory::Mixer),
+                        None,
+                        Some(stx.txid.clone()),
+                        None,
+                        coin.amount,
+                        time,
+                        hop,
+                        Claim::Inference {
+                            heuristic: "coinjoin".into(),
+                            confidence: info.confidence,
+                            evidence,
+                        },
+                        &path,
+                    );
+                    continue;
+                }
+                // Not for the seed coin: the user chose to trace from there (a scammer's address
+                // that sweeps many victims' payments is not a service).
+                let (service, dormant_note) =
+                    at_start(coin.hop, self.service_shape(&stx, &shape).await, &shape);
+                if let Some(conf) = service {
+                    let what = match &shape {
+                        TxShape::Consolidation {
+                            distinct_inputs, ..
+                        } => format!(
+                            "deposit swept together with {} other addresses",
+                            distinct_inputs.saturating_sub(1)
+                        ),
+                        _ => format!("wallet paid out in a {}", shape.describe()),
+                    };
+                    let consolidation = matches!(shape, TxShape::Consolidation { .. });
+                    let (title, category, claim) = match self.name_service(&stx, consolidation) {
+                        Some(n) => {
+                            let mut evidence = vec![shape.describe()];
+                            evidence.extend(n.evidence);
+                            (
+                                format!("Likely {}: {what}", label_title(&n.label)),
+                                n.label.category,
+                                Claim::Inference {
+                                    heuristic: "label.same_wallet".into(),
+                                    // Both the shape and the label must hold.
+                                    confidence: n.confidence.min(conf),
+                                    evidence,
+                                },
+                            )
+                        }
+                        None => (
+                            format!("Likely service: {what}"),
+                            EntityCategory::UnknownService,
+                            Claim::Inference {
+                                heuristic: "service.tx_shape".into(),
+                                confidence: conf,
+                                evidence: vec![shape.describe()],
+                            },
+                        ),
+                    };
+                    self.add_lead(
+                        LeadKind::Endpoint,
+                        title,
+                        Some(category),
+                        coin.address.clone(),
+                        Some(stx.txid.clone()),
+                        None,
+                        coin.amount,
+                        time,
+                        hop,
+                        claim,
+                        &path,
+                    );
+                    continue;
+                }
+
+                // Ordinary transaction: allocate pro-rata to outputs. If any input is not traced
+                // funds, the outputs' traced amounts are pro-rata shares from here on.
+                let total_in = stx.total_in().max(1) as u128;
+                let mixes = stx.inputs.iter().any(|i| match &i.prev_txid {
+                    Some(t) => !best.contains_key(&format!("{t}:{}", i.prev_vout)),
+                    None => true,
+                });
+                let mixed_at = coin
+                    .mixed_at
+                    .clone()
+                    .or_else(|| mixes.then(|| stx.txid.clone()));
+                self.mixed_in = mixed_at.clone();
+                let change = detect_change(&stx);
+                let peel = is_peel_step(&stx, change.as_ref());
+                if peel {
+                    self.stats.peel_steps += 1;
+                }
+                let note =
+                    dormant_note.or_else(|| (shape != TxShape::Simple).then(|| shape.describe()));
+                let mut allocated = 0u64;
+                // Pro-rata shares, rounded down; the rounding remainder goes to the largest
+                // output so only the fee's own rounding is lost (unmixed amounts stay exact).
+                let spendable: Vec<_> = stx
+                    .outputs
+                    .iter()
+                    .filter(|o| o.script_type.is_spendable())
+                    .collect();
+                let mut shares: Vec<u64> = spendable
+                    .iter()
+                    .map(|o| (coin.amount as u128 * o.value as u128 / total_in) as u64)
+                    .collect();
+                let paid: u128 = spendable.iter().map(|o| o.value as u128).sum();
+                let target = (coin.amount as u128 * paid / total_in) as u64;
+                if let Some(m) = (0..spendable.len()).max_by_key(|&i| spendable[i].value) {
+                    shares[m] += target.saturating_sub(shares.iter().sum::<u64>());
+                }
+                for (o, share) in spendable.into_iter().zip(shares) {
+                    if share == 0 {
+                        continue;
+                    }
+                    allocated += share;
+                    let role = match &change {
+                        Some(c) if c.output == o.index && c.confidence.followable() => {
+                            FlowRole::Change {
+                                confidence: c.confidence,
+                            }
+                        }
+                        _ => FlowRole::Payment,
+                    };
+                    self.flows.push(Flow {
+                        txid: stx.txid.clone(),
+                        hop,
+                        time,
+                        from: coin.address.clone(),
+                        to: o.address.clone(),
+                        from_coin: Some(format!("{}:{}", coin.txid, coin.vout)),
+                        to_coin: Some(format!("{}:{}", stx.txid, o.index)),
+                        amount: share,
+                        role,
+                        peel,
+                        note: note.clone(),
+                        mixed_in: self.mixed_in.clone(),
+                    });
+                    push(
+                        &mut pending,
+                        &mut best,
+                        Coin {
+                            txid: stx.txid.clone(),
+                            vout: o.index,
+                            address: o.address.clone(),
+                            amount: share,
+                            hop,
+                            time,
+                            path: path.clone(),
+                            mixed_at: mixed_at.clone(),
+                        },
+                    );
+                }
+                self.stats.fees += coin.amount - allocated;
             }
-            self.stats.fees += coin.amount - allocated;
+            // Coins stopped at the hop limit that were later reached by a shorter route are
+            // followed by that route; the rest are "not followed".
+            let mut again = false;
+            for c in std::mem::take(&mut deferred) {
+                let key = format!("{}:{}", c.txid, c.vout);
+                if best.get(&key).is_some_and(|(h, _)| *h < c.hop) {
+                    push(&mut pending, &mut best, c);
+                    again = true;
+                } else {
+                    self.via = c.address.clone();
+                    self.mixed_in = c.mixed_at.clone();
+                    self.unexplored(
+                        StopReason::HopLimit,
+                        c.address.clone(),
+                        &c.txid,
+                        Some(c.vout),
+                        c.amount,
+                        c.time,
+                        c.hop,
+                        &c.path,
+                    );
+                }
+            }
+            if !again {
+                break;
+            }
         }
     }
 
@@ -1182,244 +1232,298 @@ impl<'a> Tracer<'a> {
             push(&mut pending, &mut best, s);
         }
 
-        while let Some(src) = pop_largest(&mut pending, |s| s.amount()) {
-            self.mixed_in = src.mixed_at.clone();
-            self.via = src
-                .receivers
-                .iter()
-                .max_by_key(|r| r.amount)
-                .and_then(|r| r.address.clone());
-            progress(Progress {
-                txs_examined: self.stats.txs_examined,
-                pending: pending.len(),
-                leads: self.leads.len(),
-            });
-            let amount = src.amount();
-            if amount < min_amount {
-                self.stats.below_threshold += amount;
-                continue;
-            }
-            // Same limit as forward: funds are shown up to `max_hops` transactions away.
-            if src.hop >= self.config.max_hops {
-                self.unexplored_receivers(StopReason::HopLimit, &src);
-                continue;
-            }
-            if !self.budget_left(&src.txid) {
-                self.unexplored_receivers(StopReason::Budget, &src);
-                continue;
-            }
-            let tx = match self.tx(&src.txid).await {
-                Ok(t) => t,
-                Err(e) => {
-                    self.unexplored_receivers(StopReason::Error(e.to_string()), &src);
+        let mut deferred: Vec<Source> = Vec::new();
+        loop {
+            while let Some(src) = pop_largest(&mut pending, |s| s.amount()) {
+                self.mixed_in = src.mixed_at.clone();
+                self.via = src
+                    .receivers
+                    .iter()
+                    .max_by_key(|r| r.amount)
+                    .and_then(|r| r.address.clone());
+                progress(Progress {
+                    txs_examined: self.stats.txs_examined,
+                    pending: pending.len(),
+                    leads: self.leads.len(),
+                });
+                let amount = src.amount();
+                if amount < min_amount {
+                    self.stats.below_threshold += amount;
                     continue;
                 }
-            };
-            let time = block_time(&tx);
-            let shape = classify(&tx);
-            match &shape {
-                TxShape::Coinbase => {
-                    let height = tx
-                        .block
-                        .as_ref()
-                        .map(|b| b.height.to_string())
-                        .unwrap_or_default();
-                    for r in &src.receivers {
-                        self.via = r.address.clone();
+                // Same limit as forward: funds are shown up to `max_hops` transactions away.
+                if src.hop >= self.config.max_hops {
+                    // Decided at the end: a shorter route to this transaction may still turn up.
+                    deferred.push(src);
+                    continue;
+                }
+                if !self.budget_left(&src.txid) {
+                    self.unexplored_receivers(StopReason::Budget, &src);
+                    continue;
+                }
+                let tx = match self.tx(&src.txid).await {
+                    Ok(t) => t,
+                    Err(e) => {
+                        self.unexplored_receivers(StopReason::Error(e.to_string()), &src);
+                        continue;
+                    }
+                };
+                let time = block_time(&tx);
+                let shape = classify(&tx);
+                match &shape {
+                    TxShape::Coinbase => {
+                        let height = tx
+                            .block
+                            .as_ref()
+                            .map(|b| b.height.to_string())
+                            .unwrap_or_default();
+                        for r in &src.receivers {
+                            self.via = r.address.clone();
+                            self.add_lead(
+                                LeadKind::Mined,
+                                format!("Newly mined coins (block {height})"),
+                                None,
+                                r.address.clone(),
+                                Some(tx.txid.clone()),
+                                r.vout(),
+                                r.amount,
+                                time,
+                                src.hop,
+                                Claim::Fact,
+                                &src.path,
+                            );
+                        }
+                        continue;
+                    }
+                    TxShape::CoinJoin(info) => {
+                        let mut evidence = info.evidence.clone();
+                        let title = match self.name_mixer(&tx) {
+                            Some(l) => {
+                                evidence.push(format!(
+                                    "{} in this transaction: {}",
+                                    l.address,
+                                    label_evidence(&l)
+                                ));
+                                format!("Likely came out of {}: {}", l.entity, info.kind.label())
+                            }
+                            None => format!("Likely came out of {}", info.kind.label()),
+                        };
+                        self.flows_from_tx(&tx, &src, time, Some(shape.describe()));
                         self.add_lead(
-                            LeadKind::Mined,
-                            format!("Newly mined coins (block {height})"),
+                            LeadKind::Endpoint,
+                            title,
+                            Some(EntityCategory::Mixer),
                             None,
-                            r.address.clone(),
                             Some(tx.txid.clone()),
-                            r.vout(),
-                            r.amount,
+                            None,
+                            amount,
                             time,
                             src.hop,
-                            Claim::Fact,
+                            Claim::Inference {
+                                heuristic: "coinjoin".into(),
+                                confidence: info.confidence,
+                                evidence,
+                            },
                             &src.path,
                         );
+                        continue;
                     }
-                    continue;
+                    _ => {}
                 }
-                TxShape::CoinJoin(info) => {
-                    let mut evidence = info.evidence.clone();
-                    let title = match self.name_mixer(&tx) {
-                        Some(l) => {
-                            evidence.push(format!(
-                                "{} in this transaction: {}",
-                                l.address,
-                                label_evidence(&l)
-                            ));
-                            format!("Likely came out of {}: {}", l.entity, info.kind.label())
+                // Not for the seed transaction: the user chose to trace back from there.
+                // A service payout stops even at the start transaction (that is where the funds
+                // came from); a consolidation at the start does not: the user traces back from its
+                // output, and its inputs are where the funds came from.
+                let (service, dormant_note) = match self.service_shape(&tx, &shape).await {
+                (Some(_), note) if src.hop == 0 && matches!(shape, TxShape::Consolidation { .. }) => (
+                    None,
+                    note.or_else(|| {
+                        Some(format!(
+                            "{}: followed back through its inputs because the trace starts here",
+                            shape.describe()
+                        ))
+                    }),
+                ),
+                v => v,
+            };
+                if let Some(conf) = service {
+                    // Funds left a service wallet (withdrawal batch or swept hot wallet). The
+                    // whole transaction is the service's: drawn as the transaction, not as one
+                    // of its input addresses.
+                    let what = format!("funds sent in a {}", shape.describe());
+                    let (title, category, claim) = match self.name_service(&tx, false) {
+                        Some(n) => {
+                            let mut evidence = vec![shape.describe()];
+                            evidence.extend(n.evidence);
+                            (
+                                format!("Likely {}: {what}", label_title(&n.label)),
+                                n.label.category,
+                                Claim::Inference {
+                                    heuristic: "label.same_wallet".into(),
+                                    confidence: n.confidence.min(conf),
+                                    evidence,
+                                },
+                            )
                         }
-                        None => format!("Likely came out of {}", info.kind.label()),
+                        None => (
+                            format!("Likely service: {what}"),
+                            EntityCategory::UnknownService,
+                            Claim::Inference {
+                                heuristic: "service.tx_shape".into(),
+                                confidence: conf,
+                                evidence: vec![shape.describe()],
+                            },
+                        ),
                     };
                     self.flows_from_tx(&tx, &src, time, Some(shape.describe()));
                     self.add_lead(
                         LeadKind::Endpoint,
                         title,
-                        Some(EntityCategory::Mixer),
+                        Some(category),
                         None,
                         Some(tx.txid.clone()),
                         None,
                         amount,
                         time,
                         src.hop,
-                        Claim::Inference {
-                            heuristic: "coinjoin".into(),
-                            confidence: info.confidence,
-                            evidence,
-                        },
+                        claim,
                         &src.path,
                     );
                     continue;
                 }
-                _ => {}
-            }
-            // Not for the seed transaction: the user chose to trace back from there.
-            // A service payout is a stop even for the start transaction: that is where the
-            // funds came from.
-            let (service, dormant_note) = self.service_shape(&tx, &shape).await;
-            if let Some(conf) = service {
-                // Funds left a service wallet (withdrawal batch or swept hot wallet). The
-                // whole transaction is the service's: drawn as the transaction, not as one
-                // of its input addresses.
-                let what = format!("funds sent in a {}", shape.describe());
-                let (title, category, claim) = match self.name_service(&tx, false) {
-                    Some(n) => {
-                        let mut evidence = vec![shape.describe()];
-                        evidence.extend(n.evidence);
-                        (
-                            format!("Likely {}: {what}", label_title(&n.label)),
-                            n.label.category,
-                            Claim::Inference {
-                                heuristic: "label.same_wallet".into(),
-                                confidence: n.confidence.min(conf),
-                                evidence,
-                            },
-                        )
-                    }
-                    None => (
-                        format!("Likely service: {what}"),
-                        EntityCategory::UnknownService,
-                        Claim::Inference {
-                            heuristic: "service.tx_shape".into(),
-                            confidence: conf,
-                            evidence: vec![shape.describe()],
-                        },
-                    ),
-                };
-                self.flows_from_tx(&tx, &src, time, Some(shape.describe()));
-                self.add_lead(
-                    LeadKind::Endpoint,
-                    title,
-                    Some(category),
-                    None,
-                    Some(tx.txid.clone()),
-                    None,
-                    amount,
-                    time,
-                    src.hop,
-                    claim,
-                    &src.path,
-                );
-                continue;
-            }
 
-            // Allocate each traced output's amount pro-rata to the inputs (remainder to the
-            // largest input, so the amounts add up exactly), one edge per input and output.
-            // If the inputs also paid outputs that are not traced, the inputs' shares are
-            // pro-rata from here on.
-            let total_in = tx.total_in().max(1) as u128;
-            let mixed_at = src
-                .mixed_at
-                .clone()
-                .or_else(|| (amount < tx.total_out()).then(|| tx.txid.clone()));
-            self.mixed_in = mixed_at.clone();
-            let largest = (0..tx.inputs.len()).max_by_key(|&i| tx.inputs[i].value);
-            let mut per_input = vec![0u64; tx.inputs.len()];
-            let note =
-                dormant_note.or_else(|| (shape != TxShape::Simple).then(|| shape.describe()));
-            for r in &src.receivers {
-                let mut shares: Vec<u64> = tx
-                    .inputs
+                // Allocate each traced output's amount pro-rata to the inputs (remainder to the
+                // largest input, so the amounts add up exactly), one edge per input and output.
+                // If the inputs also paid outputs that are not traced, the inputs' shares are
+                // pro-rata from here on.
+                let total_in = tx.total_in().max(1) as u128;
+                // Mixed here if the inputs also paid an output that is not traced (fees are not
+                // other people's funds; a whole transaction traced back is all traced).
+                let whole = src
+                    .receivers
                     .iter()
-                    .map(|i| (r.amount as u128 * i.value as u128 / total_in) as u64)
-                    .collect();
-                let remainder = r.amount - shares.iter().sum::<u64>();
-                if let Some(m) = largest {
-                    shares[m] += remainder;
+                    .any(|r| r.coin.as_deref() == Some(tx.txid.as_str()));
+                let untraced_output = !whole
+                    && tx
+                        .outputs
+                        .iter()
+                        .filter(|o| o.value > 0 && o.script_type.is_spendable())
+                        .any(|o| {
+                            let coin = format!("{}:{}", tx.txid, o.index);
+                            !src.receivers
+                                .iter()
+                                .any(|r| r.coin.as_deref() == Some(coin.as_str()))
+                        });
+                let mixed_at = src
+                    .mixed_at
+                    .clone()
+                    .or_else(|| untraced_output.then(|| tx.txid.clone()));
+                self.mixed_in = mixed_at.clone();
+                let largest = (0..tx.inputs.len()).max_by_key(|&i| tx.inputs[i].value);
+                let mut per_input = vec![0u64; tx.inputs.len()];
+                let note =
+                    dormant_note.or_else(|| (shape != TxShape::Simple).then(|| shape.describe()));
+                for r in &src.receivers {
+                    let mut shares: Vec<u64> = tx
+                        .inputs
+                        .iter()
+                        .map(|i| (r.amount as u128 * i.value as u128 / total_in) as u64)
+                        .collect();
+                    let remainder = r.amount - shares.iter().sum::<u64>();
+                    if let Some(m) = largest {
+                        shares[m] += remainder;
+                    }
+                    for (k, input) in tx.inputs.iter().enumerate() {
+                        let share = shares[k];
+                        if share == 0 {
+                            continue;
+                        }
+                        let Some(prev_txid) = &input.prev_txid else {
+                            continue;
+                        };
+                        self.flows.push(Flow {
+                            txid: tx.txid.clone(),
+                            hop: src.hop,
+                            time,
+                            from: input.address.clone(),
+                            to: r.address.clone(),
+                            from_coin: Some(format!("{prev_txid}:{}", input.prev_vout)),
+                            to_coin: r.coin.clone(),
+                            amount: share,
+                            role: FlowRole::Source,
+                            peel: false,
+                            note: note.clone(),
+                            mixed_in: self.mixed_in.clone(),
+                        });
+                        per_input[k] += share;
+                    }
                 }
                 for (k, input) in tx.inputs.iter().enumerate() {
-                    let share = shares[k];
+                    let share = per_input[k];
                     if share == 0 {
                         continue;
                     }
-                    let Some(prev_txid) = &input.prev_txid else {
+                    let Some(prev_txid) = input.prev_txid.clone() else {
                         continue;
                     };
-                    self.flows.push(Flow {
-                        txid: tx.txid.clone(),
-                        hop: src.hop,
-                        time,
-                        from: input.address.clone(),
-                        to: r.address.clone(),
-                        from_coin: Some(format!("{prev_txid}:{}", input.prev_vout)),
-                        to_coin: r.coin.clone(),
-                        amount: share,
-                        role: FlowRole::Source,
-                        peel: false,
-                        note: note.clone(),
-                        mixed_in: self.mixed_in.clone(),
-                    });
-                    per_input[k] += share;
+                    let mut path = src.path.clone();
+                    path.push(prev_txid.clone());
+                    self.via = input.address.clone();
+                    // Small shares use only what is already known (no lookups for them).
+                    let endpoint = match input.address.clone() {
+                        Some(addr) if share >= min_amount => {
+                            self.endpoint_for(&addr).await.map(|e| (addr, e))
+                        }
+                        Some(addr) => self.known_endpoint(&addr).map(|e| (addr, e)),
+                        None => None,
+                    };
+                    if let Some((addr, (title, category, claim))) = endpoint {
+                        self.add_lead(
+                            LeadKind::Endpoint,
+                            title,
+                            Some(category),
+                            Some(addr),
+                            Some(prev_txid),
+                            None,
+                            share,
+                            time,
+                            src.hop + 1,
+                            claim,
+                            &path,
+                        );
+                        continue;
+                    }
+                    push(
+                        &mut pending,
+                        &mut best,
+                        Source {
+                            txid: prev_txid.clone(),
+                            hop: src.hop + 1,
+                            receivers: vec![Receiver {
+                                address: input.address.clone(),
+                                coin: Some(format!("{prev_txid}:{}", input.prev_vout)),
+                                amount: share,
+                            }],
+                            path,
+                            mixed_at: mixed_at.clone(),
+                        },
+                    );
                 }
             }
-            for (k, input) in tx.inputs.iter().enumerate() {
-                let share = per_input[k];
-                if share == 0 {
-                    continue;
+            // Sources stopped at the hop limit that were later reached by a shorter route are
+            // followed by that route; the rest are "not followed".
+            let mut again = false;
+            for src in std::mem::take(&mut deferred) {
+                if best.get(&src.txid).is_some_and(|(h, _)| *h < src.hop) {
+                    push(&mut pending, &mut best, src);
+                    again = true;
+                } else {
+                    self.mixed_in = src.mixed_at.clone();
+                    self.unexplored_receivers(StopReason::HopLimit, &src);
                 }
-                let Some(prev_txid) = input.prev_txid.clone() else {
-                    continue;
-                };
-                let mut path = src.path.clone();
-                path.push(prev_txid.clone());
-                self.via = input.address.clone();
-                if let Some(addr) = input.address.clone()
-                    && let Some((title, category, claim)) = self.endpoint_for(&addr).await
-                {
-                    self.add_lead(
-                        LeadKind::Endpoint,
-                        title,
-                        Some(category),
-                        Some(addr),
-                        Some(prev_txid),
-                        None,
-                        share,
-                        time,
-                        src.hop + 1,
-                        claim,
-                        &path,
-                    );
-                    continue;
-                }
-                push(
-                    &mut pending,
-                    &mut best,
-                    Source {
-                        txid: prev_txid.clone(),
-                        hop: src.hop + 1,
-                        receivers: vec![Receiver {
-                            address: input.address.clone(),
-                            coin: Some(format!("{prev_txid}:{}", input.prev_vout)),
-                            amount: share,
-                        }],
-                        path,
-                        mixed_at: mixed_at.clone(),
-                    },
-                );
+            }
+            if !again {
+                break;
             }
         }
     }
