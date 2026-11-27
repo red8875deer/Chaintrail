@@ -82,6 +82,11 @@ pub struct Lead {
     /// Output of `txid` holding the funds, when the lead is one coin (at rest, not followed).
     #[serde(default)]
     pub vout: Option<u32>,
+    /// Transaction where the traced funds on the way here were first mixed with other funds.
+    /// From there on amounts are a pro-rata share (an allocation under the rule recorded with
+    /// the trace, not an on-chain fact). `None`: the amount moved here unmixed.
+    #[serde(default)]
+    pub mixed_in: Option<String>,
     /// Traced amount reaching this lead, in base units.
     pub amount: u64,
     /// Block time (Unix seconds) when funds first reached it.

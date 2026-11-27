@@ -153,6 +153,7 @@ export function roleText(role: FlowRole): string {
 const HEURISTIC_NAMES: Record<string, string> = {
   coinjoin: "CoinJoin detection",
   "service.busy_address": "address activity (busy service wallet)",
+  "allocation.pro_rata": "pro-rata allocation after the funds were mixed",
   "service.tx_shape": "transaction shape (service behaviour)",
   "label.same_wallet": "a label on the same wallet",
 };

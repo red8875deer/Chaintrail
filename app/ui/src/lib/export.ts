@@ -39,6 +39,7 @@ export function leadsCsv(view: TraceView): string {
     "first_seen_utc",
     "confidence",
     "basis",
+    "amount_basis",
     "evidence_or_source",
   ];
   const rows = r.leads.map((l) => {
@@ -55,6 +56,7 @@ export function leadsCsv(view: TraceView): string {
       l.first_time !== null ? formatUtc(l.first_time) : "",
       l.confidence,
       c.kind,
+      l.mixed_in ? `pro-rata share (funds mixed in ${l.mixed_in})` : "on-chain (unmixed)",
       [...c.evidence, c.url ?? ""].filter(Boolean).join(" | "),
     ];
   });

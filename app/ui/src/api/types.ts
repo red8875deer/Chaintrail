@@ -236,6 +236,9 @@ export interface Lead {
   txid: string | null;
   /** Output of `txid` holding the funds when the lead is one coin (at rest, not followed). */
   vout?: number | null;
+  /** Transaction where the traced funds on the way here were first mixed with other funds:
+   * from there on amounts are a pro-rata share (an allocation, not an on-chain fact). */
+  mixed_in?: string | null;
   amount: number;
   first_time: number | null;
   hops: number;

@@ -63,6 +63,14 @@ function LeadRow({
         {lead.category && <span>{categoryName(lead.category)}</span>}
         <Meter confidence={lead.confidence} />
         <Basis claim={lead.claim} />
+        {lead.mixed_in && (
+          <span
+            className="tag-allocated"
+            title={`The traced funds were mixed with other funds in transaction ${lead.mixed_in}: this amount is their pro-rata share, not an on-chain fact.`}
+          >
+            pro-rata share
+          </span>
+        )}
         <span title="Transactions between the start of the trace and this lead">
           {lead.hops === 0 ? "at the start" : `${lead.hops} hop${lead.hops === 1 ? "" : "s"}`}
         </span>

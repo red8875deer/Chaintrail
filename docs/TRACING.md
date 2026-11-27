@@ -202,6 +202,15 @@ The rule used is recorded with every trace.
 
 A path's confidence is the **lowest** confidence of any hop on it.
 
+**Amounts after mixing are allocations, not facts.** A lead's amount is an on-chain fact
+only if the traced funds were never mixed with other funds on the way (forward: every input
+of each transaction was traced funds; backward: the traced outputs were all the transaction
+paid). After mixing, amounts are pro-rata shares: the lead records the transaction where the
+funds were first mixed (`mixed_in`), shows "pro-rata share", and a lead that would be a
+fact (funds at rest, not followed) becomes an inference about the amount (Medium) whose
+evidence names that transaction. Identifications (labels, service and CoinJoin detection)
+keep their own confidence; the amount basis is shown next to them.
+
 ## 7. Golden cases
 
 `crates/ct-trace/tests/golden/` holds fund flows documented by US government sources,

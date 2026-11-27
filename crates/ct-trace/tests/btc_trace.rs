@@ -71,6 +71,9 @@ async fn simple_chain_ends_at_rest() {
     assert_eq!(lead.amount, BTC - 10_000);
     assert_eq!(lead.hops, 1);
     assert_eq!(lead.confidence, Confidence::Certain);
+    // Nothing mixed on the way: the amount is an on-chain fact.
+    assert_eq!(lead.mixed_in, None);
+    assert_eq!(lead.claim, Claim::Fact);
     assert_eq!(lead.path, vec![txid(1), txid(2)]);
     assert_eq!(r.stats.fees, 10_000);
 }
@@ -107,6 +110,22 @@ async fn mixed_funds_split_pro_rata() {
     };
     assert_eq!(at(5), BTC / 2); // 1 × 2/4
     assert_eq!(at(6), 49_975_000); // 1 × 1.999/4
+    // The amounts are a pro-rata allocation after mixing, not on-chain facts.
+    for l in &r.leads {
+        assert_eq!(l.mixed_in, Some(txid(2)), "{l:#?}");
+        assert_eq!(l.confidence, Confidence::Medium);
+        match &l.claim {
+            Claim::Inference {
+                heuristic,
+                evidence,
+                ..
+            } => {
+                assert_eq!(heuristic, "allocation.pro_rata");
+                assert!(evidence[0].contains(&txid(2)), "{evidence:?}");
+            }
+            other => panic!("{other:?}"),
+        }
+    }
     assert_eq!(r.stats.fees, 25_000);
 }
 

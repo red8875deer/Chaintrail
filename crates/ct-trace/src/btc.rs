@@ -75,6 +75,7 @@ pub async fn trace_bitcoin(
         labels_seen: Vec::new(),
         stats: TraceStats::default(),
         via: None,
+        mixed_in: None,
     };
     let seed_tx = t.tx(seed.txid()).await?;
     let seed_outputs: Vec<(u32, Option<Address>, u64)> = match &seed {
@@ -151,6 +152,7 @@ pub async fn trace_bitcoin(
                     hop: 0,
                     time: block_time(&seed_tx),
                     path: vec![seed_tx.txid.clone()],
+                    mixed_at: None,
                 })
                 .collect();
             t.forward(coins, min_amount, progress).await;
@@ -177,6 +179,7 @@ pub async fn trace_bitcoin(
                 hop: 0,
                 receivers,
                 path: vec![seed_tx.txid.clone()],
+                mixed_at: None,
             };
             t.backward(vec![source], min_amount, progress).await;
         }
@@ -209,6 +212,8 @@ struct Coin {
     hop: u32,
     time: Option<u64>,
     path: Vec<String>,
+    /// First transaction where the traced funds reaching this coin were mixed with others.
+    mixed_at: Option<String>,
 }
 
 /// Traced funds received by one output, whose origin is followed backward.
@@ -235,6 +240,9 @@ struct Source {
     hop: u32,
     receivers: Vec<Receiver>,
     path: Vec<String>,
+    /// First transaction (from the seed) where the traced funds were shared with outputs
+    /// that are not traced, so amounts became pro-rata shares.
+    mixed_at: Option<String>,
 }
 
 impl Source {
@@ -259,6 +267,8 @@ struct Tracer<'a> {
     stats: TraceStats,
     /// Address currently being processed; stamped on leads as `via`.
     via: Option<Address>,
+    /// Mixing on the way to the coin being processed; stamped on leads as `mixed_in`.
+    mixed_in: Option<String>,
 }
 
 /// A service named through labels on addresses of the same wallet.
@@ -633,8 +643,14 @@ impl<'a> Tracer<'a> {
             _ => String::new(),
         };
         let key = format!("{tag}|{place}|{title}|{coin}");
+        let mixed_in = self.mixed_in.clone();
         if let Some(&i) = self.lead_index.get(&key) {
             let lead = &mut self.leads[i];
+            if lead.mixed_in.is_none() && mixed_in.is_some() {
+                lead.mixed_in = mixed_in.clone();
+                lead.claim = allocation_claim(lead.claim.clone(), mixed_in.as_deref());
+                lead.confidence = lead.confidence.min(lead.claim.confidence());
+            }
             lead.amount += amount;
             lead.hops = lead.hops.min(hops);
             lead.first_time = match (lead.first_time, time) {
@@ -643,6 +659,7 @@ impl<'a> Tracer<'a> {
             };
             return;
         }
+        let claim = allocation_claim(claim, mixed_in.as_deref());
         self.lead_index.insert(key, self.leads.len());
         self.leads.push(Lead {
             kind,
@@ -652,6 +669,7 @@ impl<'a> Tracer<'a> {
             via: self.via.clone(),
             txid,
             vout,
+            mixed_in,
             amount,
             first_time: time,
             hops,
@@ -724,6 +742,9 @@ impl<'a> Tracer<'a> {
             match pending.get_mut(&key) {
                 Some(e) => {
                     e.amount += c.amount;
+                    if e.mixed_at.is_none() {
+                        e.mixed_at = c.mixed_at.clone();
+                    }
                     if c.hop < e.hop {
                         e.hop = c.hop;
                         e.path = c.path;
@@ -740,6 +761,7 @@ impl<'a> Tracer<'a> {
 
         while let Some(coin) = pop_largest(&mut pending, |c| c.amount) {
             self.via = coin.address.clone();
+            self.mixed_in = coin.mixed_at.clone();
             progress(Progress {
                 txs_examined: self.stats.txs_examined,
                 pending: pending.len(),
@@ -974,8 +996,17 @@ impl<'a> Tracer<'a> {
                 continue;
             }
 
-            // Ordinary transaction: allocate pro-rata to outputs.
+            // Ordinary transaction: allocate pro-rata to outputs. If any input is not traced
+            // funds, the outputs' traced amounts are pro-rata shares from here on.
             let total_in = stx.total_in().max(1) as u128;
+            let mixes = stx.inputs.iter().any(|i| match &i.prev_txid {
+                Some(t) => !best.contains_key(&format!("{t}:{}", i.prev_vout)),
+                None => true,
+            });
+            let mixed_at = coin
+                .mixed_at
+                .clone()
+                .or_else(|| mixes.then(|| stx.txid.clone()));
             let change = detect_change(&stx);
             let peel = is_peel_step(&stx, change.as_ref());
             if peel {
@@ -1022,6 +1053,7 @@ impl<'a> Tracer<'a> {
                         hop,
                         time,
                         path: path.clone(),
+                        mixed_at: mixed_at.clone(),
                     },
                 );
             }
@@ -1108,6 +1140,9 @@ impl<'a> Tracer<'a> {
                             None => e.receivers.push(r),
                         }
                     }
+                    if e.mixed_at.is_none() {
+                        e.mixed_at = s.mixed_at.clone();
+                    }
                     if s.hop < e.hop {
                         e.hop = s.hop;
                         e.path = s.path;
@@ -1123,6 +1158,7 @@ impl<'a> Tracer<'a> {
         }
 
         while let Some(src) = pop_largest(&mut pending, |s| s.amount()) {
+            self.mixed_in = src.mixed_at.clone();
             self.via = src
                 .receivers
                 .iter()
@@ -1268,7 +1304,14 @@ impl<'a> Tracer<'a> {
 
             // Allocate each traced output's amount pro-rata to the inputs (remainder to the
             // largest input, so the amounts add up exactly), one edge per input and output.
+            // If the inputs also paid outputs that are not traced, the inputs' shares are
+            // pro-rata from here on.
             let total_in = tx.total_in().max(1) as u128;
+            let mixed_at = src
+                .mixed_at
+                .clone()
+                .or_else(|| (amount < tx.total_out()).then(|| tx.txid.clone()));
+            self.mixed_in = mixed_at.clone();
             let largest = (0..tx.inputs.len()).max_by_key(|&i| tx.inputs[i].value);
             let mut per_input = vec![0u64; tx.inputs.len()];
             let note =
@@ -1348,10 +1391,47 @@ impl<'a> Tracer<'a> {
                             amount: share,
                         }],
                         path,
+                        mixed_at: mixed_at.clone(),
                     },
                 );
             }
         }
+    }
+}
+
+/// After the traced funds were mixed with other funds, a lead's amount is a pro-rata share:
+/// an allocation under the trace's rule, not an on-chain fact (`docs/TRACING.md` §5–6). An
+/// on-chain fact ("funds at rest here") becomes an inference about the amount; an inference
+/// keeps its confidence and gains the allocation in its evidence. Labels are unchanged (the
+/// lead's `mixed_in` marks the amount).
+fn allocation_claim(claim: Claim, mixed_in: Option<&str>) -> Claim {
+    let Some(txid) = mixed_in else {
+        return claim;
+    };
+    let why = format!(
+        "the traced funds were mixed with other funds in transaction {txid}; from there on amounts are their pro-rata share (other allocation rules can give different amounts)"
+    );
+    match claim {
+        Claim::Fact => Claim::Inference {
+            heuristic: "allocation.pro_rata".into(),
+            confidence: Confidence::Medium,
+            evidence: vec![why],
+        },
+        Claim::Inference {
+            heuristic,
+            confidence,
+            mut evidence,
+        } => {
+            if !evidence.contains(&why) {
+                evidence.push(why);
+            }
+            Claim::Inference {
+                heuristic,
+                confidence,
+                evidence,
+            }
+        }
+        other => other,
     }
 }
 

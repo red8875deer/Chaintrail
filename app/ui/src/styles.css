@@ -1171,3 +1171,12 @@ table.ledger a:hover,
 .request .btn {
   justify-self: start;
 }
+
+/* Lead amounts that are a pro-rata share after mixing (not an on-chain fact). */
+.tag-allocated {
+  border: 1px dashed var(--muted);
+  border-radius: 999px;
+  padding: 0 7px;
+  font-size: 0.78rem;
+  color: var(--ink);
+}
