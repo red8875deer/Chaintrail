@@ -44,6 +44,19 @@ describe.each(views)("display graph: %s", (_, view) => {
     expect(d.nodeOf.size + d.hidden + d.unlinked).toBe(d.total);
   });
 
+  it("never draws more than the traced amount on one line (self-transfers do not add up)", () => {
+    const all = buildDisplay(view, { minShareBp: 0, simplify: true, expanded: new Set(), keep: new Set(), keepEdges: new Set() });
+    for (const e of all.elements.filter((e) => e.group === "edges")) {
+      expect(Number(e.data.amount), String(e.data.id)).toBeLessThanOrEqual(view.report.seed_amount);
+    }
+  });
+
+  it("lists only a combined line's own transfers", () => {
+    for (const [id, members] of d.edgeMembers) {
+      for (const m of members) expect(d.edgeOf.get(m)).toBe(id);
+    }
+  });
+
   it("links every report node to the start", () => {
     expect(d.unlinked).toBe(0);
   });

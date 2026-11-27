@@ -162,13 +162,13 @@ function DetailsBody({
       if (g) return g.kind === "chain" ? `${g.members.length} addresses in a row` : `${g.members.length} smaller branches`;
       return nodeById(view, s)?.label ?? s;
     };
-    const members = view.graph.edges
-      .filter((e) => display.edgeOf.get(e.id) === selection.id)
-      .sort((a, b) => b.amount - a.amount);
+    const ids = new Set(display.edgeMembers.get(selection.id) ?? []);
+    const members = view.graph.edges.filter((e) => ids.has(e.id)).sort((a, b) => (a.time ?? 0) - (b.time ?? 0));
+    const loop = el.data.source === el.data.target;
     return (
       <section className="details" aria-label="Selected flow">
         <div className="details-head">
-          <h3>Funds moved (combined)</h3>
+          <h3>{loop ? "Funds moved to the same address" : "Funds moved (combined)"}</h3>
           <button type="button" className="btn subtle" onClick={onClose}>
             Close
           </button>
@@ -181,7 +181,9 @@ function DetailsBody({
           From <span className="mono">{label(el.data.source)}</span> to <span className="mono">{label(el.data.target)}</span>
         </p>
         <p className="small muted">
-          {members.length} transfer{members.length === 1 ? "" : "s"} drawn as one line, with their total.
+          {loop
+            ? `The address paid itself ${members.length} time${members.length === 1 ? "" : "s"}. Each time the same coins moved again, so the amount is the largest single move, not a total.`
+            : `${members.length} transfer${members.length === 1 ? "" : "s"} drawn as one line, with their total.`}
         </p>
         <ul className="evidence" style={{ maxHeight: 220, overflow: "auto" }}>
           {members.slice(0, 30).map((e) => (
@@ -220,7 +222,8 @@ function DetailsBody({
         {e.note && <p className="small muted">{e.note}</p>}
         <p className="small">
           {formatUtc(e.time)}
-          {e.peel && ". Part of a peel chain."}
+          {e.peel &&
+            ". Part of a peel chain: a large amount repeatedly splits off a smaller payment and moves the rest on to a new address."}
         </p>
         <p className="small">
           Transaction <Id value={e.txid} short href={href({ page: "tx", txid: e.txid })} />
@@ -282,11 +285,11 @@ function DetailsBody({
             <strong>{leadKindName(lead.kind)}:</strong> <Btc sats={lead.amount} />{" "}
             <span className="muted small">{formatShare(lead.amount, r.seed_amount)}</span>
           </p>
-          <p className="small muted">{leadKindExplanation(lead.kind)}</p>
+          <p className="small muted">{leadKindExplanation(lead.kind, lead.category)}</p>
           {lead.category && <p className="small">Category: {categoryName(lead.category)}</p>}
           <ClaimExplained claim={lead.claim} />
           <p className="small muted">
-            Reached after {lead.hops} hop{lead.hops === 1 ? "" : "s"}
+            {lead.hops === 0 ? "At the start of the trace" : `Reached after ${lead.hops} hop${lead.hops === 1 ? "" : "s"}`}
             {lead.first_time !== null ? `, first on ${formatUtc(lead.first_time)}` : ""}.
           </p>
           {partRoute && (
@@ -310,7 +313,7 @@ function DetailsBody({
         </div>
       )}
       {!lead && seen && <ClaimExplained claim={seen.claim} />}
-      <dl className="facts">
+      <dl className="facts" hidden={node.amount_in === 0 && node.amount_out === 0}>
         <div className="fact">
           <dt>Traced funds in</dt>
           <dd>

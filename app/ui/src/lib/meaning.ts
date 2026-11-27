@@ -116,10 +116,16 @@ export function leadKindName(kind: LeadKind): string {
   }
 }
 
-export function leadKindExplanation(kind: LeadKind): string {
+export function leadKindExplanation(kind: LeadKind, category?: EntityCategory | null): string {
   switch (kind.kind) {
     case "endpoint":
-      return "The trace stopped here because the funds reached a known or detected service.";
+      if (category === "mixer")
+        return "The funds entered a mixer or CoinJoin, where many people's coins are combined. Following them further would be unreliable, so the trace stops here. There is usually no operator to ask for records.";
+      if (category === "sanctioned" || category === "terrorist_financing")
+        return "The funds reached an address on a sanctions list. The trace stops here.";
+      if (category === "scam" || category === "ransomware" || category === "hack" || category === "darknet")
+        return "The funds reached an address linked to criminal activity. The trace stops here.";
+      return "The trace stopped here because the funds reached a known or detected service. A service such as an exchange keeps account records and can be asked who controls this deposit.";
     case "at_rest":
       return "The funds have not moved since: they are still in this unspent output.";
     case "mined":

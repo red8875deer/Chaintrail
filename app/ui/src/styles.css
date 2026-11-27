@@ -1066,3 +1066,78 @@ table.ledger a:hover,
   color: var(--ink);
   background: var(--paper);
 }
+
+/* Result summary: where the traced amount went, by kind. */
+.exposure {
+  display: grid;
+  gap: 8px;
+}
+.exposure-bar {
+  display: flex;
+  height: 12px;
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--paper);
+  gap: 1px;
+}
+.exposure-bar span {
+  display: block;
+  min-width: 3px;
+}
+.exposure-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 2px;
+}
+.exposure-row {
+  width: 100%;
+  display: grid;
+  grid-template-columns: auto 1fr auto auto;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-s);
+  background: none;
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.9rem;
+  text-align: left;
+  cursor: pointer;
+}
+.exposure-row:hover:not(:disabled),
+.exposure-row:focus-visible {
+  background: var(--paper);
+}
+.exposure-row[aria-pressed="true"] {
+  border-color: var(--trail);
+  background: var(--paper);
+}
+.exposure-row:disabled {
+  cursor: default;
+  color: var(--muted);
+}
+.exposure-share {
+  min-width: 4.5em;
+  text-align: right;
+}
+
+/* The details of what is selected stay in view while the list below scrolls. */
+.details-anchor:has(> .details) {
+  position: sticky;
+  top: -16px;
+  z-index: 3;
+  max-height: 48vh;
+  overflow: auto;
+  margin: -16px -18px 0;
+  padding: 16px 18px 10px;
+  background: var(--surface);
+  box-shadow: 0 8px 12px -10px rgba(0, 0, 0, 0.25);
+}
+/* Rows take their content's height (a scrolling child must not be squeezed to nothing). */
+.side-scroll {
+  grid-auto-rows: max-content;
+  align-content: start;
+}

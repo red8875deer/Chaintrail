@@ -89,6 +89,26 @@ export function href(route: Route): string {
   }
 }
 
+/** Trace limits used when a link does not give them. */
+export const DEFAULT_MAX_HOPS = 8;
+export const DEFAULT_MAX_TXS = 100;
+
+/** Two trace links describe the same trace (ignoring parameter order, defaults and `run`). */
+export function sameTrace(a: TraceParams, b: TraceParams): boolean {
+  const key = (p: TraceParams) =>
+    [
+      p.txid.toLowerCase(),
+      p.vout ?? "",
+      p.to ?? "",
+      p.direction,
+      p.maxHops ?? DEFAULT_MAX_HOPS,
+      p.maxTxs ?? DEFAULT_MAX_TXS,
+      p.minBtc ?? "",
+      p.checkAddresses === false ? "0" : "",
+    ].join("|");
+  return key(a) === key(b);
+}
+
 export function go(route: Route): void {
   window.location.hash = href(route);
 }

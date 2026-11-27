@@ -11,7 +11,7 @@ import { Legend } from "../components/Legend";
 import { exportCsv, exportJson, exportPng } from "../lib/export";
 import { formatElapsed, formatInt, parseBtc } from "../lib/format";
 import { buildDisplay, defaultMinShareBp, displayPath, isGroupId, leadPath, leadSpine, nodeForLead } from "../lib/graph";
-import { type TraceParams, href } from "../lib/route";
+import { DEFAULT_MAX_HOPS, DEFAULT_MAX_TXS, type TraceParams, href, parseRoute, sameTrace } from "../lib/route";
 
 function plural(n: number, one: string, many = `${one}s`): string {
   return `${n} ${n === 1 ? one : many}`;
@@ -34,8 +34,8 @@ function fromParams(p: TraceParams | null): FormState {
     vout: p?.vout !== undefined ? String(p.vout) : "",
     to: p?.to ?? "",
     direction: p?.direction ?? "forward",
-    maxHops: p?.maxHops !== undefined ? String(p.maxHops) : "8",
-    maxTxs: p?.maxTxs !== undefined ? String(p.maxTxs) : "100",
+    maxHops: String(p?.maxHops ?? DEFAULT_MAX_HOPS),
+    maxTxs: String(p?.maxTxs ?? DEFAULT_MAX_TXS),
     minBtc: p?.minBtc ?? "",
     checkAddresses: p?.checkAddresses ?? true,
   };
@@ -54,8 +54,8 @@ function toRequest(f: FormState): TraceRequest | string {
     vout: f.vout.trim() ? Number(f.vout.trim()) : null,
     to: f.to.trim() || null,
     direction: f.direction,
-    max_hops: int(f.maxHops, 8),
-    max_txs: int(f.maxTxs, 100),
+    max_hops: int(f.maxHops, DEFAULT_MAX_HOPS),
+    max_txs: int(f.maxTxs, DEFAULT_MAX_TXS),
     min_sats: min !== null ? Number(min) : null,
     check_addresses: f.checkAddresses,
   };
@@ -86,24 +86,27 @@ export function TraceView({ params }: { params: TraceParams | null }) {
       setError(new Error(req));
       return;
     }
-    // Keep a shareable link to this trace without re-running it on load.
-    history.replaceState(
-      null,
-      "",
-      href({
-        page: "trace",
-        params: {
-          txid: req.txid,
-          vout: req.vout ?? undefined,
-          to: req.to ?? undefined,
-          direction: req.direction,
-          maxHops: req.max_hops ?? undefined,
-          maxTxs: req.max_txs ?? undefined,
-          minBtc: f.minBtc.trim() || undefined,
-          checkAddresses: req.check_addresses ?? undefined,
-        },
-      }),
-    );
+    // Every trace gets its own history entry and a link that reproduces it: Back and
+    // Forward re-open earlier traces (instantly, from the local cache), and reloading or
+    // sharing the link shows the same results.
+    const target: TraceParams = {
+      txid: req.txid,
+      vout: req.vout ?? undefined,
+      to: req.to ?? undefined,
+      direction: req.direction,
+      maxHops: req.max_hops ?? undefined,
+      maxTxs: req.max_txs ?? undefined,
+      minBtc: f.minBtc.trim() || undefined,
+      checkAddresses: req.check_addresses ?? undefined,
+      run: true,
+    };
+    const current = parseRoute(window.location.hash);
+    const url = href({ page: "trace", params: target });
+    if (current.page === "trace" && current.params && sameTrace(current.params, target)) {
+      history.replaceState(null, "", url);
+    } else {
+      history.pushState(null, "", url);
+    }
     const id = ++runId.current;
     setRunning(true);
     setError(null);

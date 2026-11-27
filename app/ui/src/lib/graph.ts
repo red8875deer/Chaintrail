@@ -80,8 +80,10 @@ export function edgeWidth(amount: number, seedAmount: number): number {
   return Math.round((1.25 + 9 * Math.sqrt(share)) * 10) / 10;
 }
 
+/** The traced amount at a node: what passed through it, or what ended there if more. A node
+ * where part of the funds stopped (e.g. not followed) but more moved on shows the larger. */
 export function nodeAmount(n: GraphNode): number {
-  return n.lead?.amount ?? Math.max(n.amount_in, n.amount_out);
+  return Math.max(n.lead?.amount ?? 0, n.amount_in, n.amount_out);
 }
 
 /** Edges and nodes on a lead's path, as ids of the report's graph. Walks from the lead
@@ -186,8 +188,10 @@ export interface Display {
   elements: ElementDefinition[];
   /** Report node id → displayed node id (itself, a group or a chain). */
   nodeOf: Map<string, string>;
-  /** Report edge id → displayed edge id. */
+  /** Report edge id → displayed edge id (edges inside a collapsed run map to its line). */
   edgeOf: Map<string, string>;
+  /** Displayed edge id → the report edges it actually draws (its own transfers only). */
+  edgeMembers: Map<string, string[]>;
   groups: Map<string, DisplayGroup>;
   /** Report nodes not drawn because their flows are below the threshold. */
   hidden: number;
@@ -383,10 +387,13 @@ export function buildDisplay(view: TraceView, o: DisplayOptions): Display {
     }
     const key = `${s}|${t}`;
     const m = merged.get(key) ?? merged.set(key, { source: s, target: t, amount: 0, members: [] }).get(key)!;
-    m.amount += e.amount;
+    // An address paying itself again and again moves the same coins each time: the total
+    // is the largest single move, not the sum.
+    m.amount = s === t ? Math.max(m.amount, e.amount) : m.amount + e.amount;
     m.members.push(e);
   }
   const busy = merged.size > BUSY_EDGES;
+  const edgeMembers = new Map<string, string[]>();
   // Where several edges meet at one node, their amounts would pile up there: put the label
   // at the other, unshared end (by each source for a fan-in, by each target for a fan-out).
   const inDeg = new Map<string, number>();
@@ -401,6 +408,10 @@ export function buildDisplay(view: TraceView, o: DisplayOptions): Display {
     const single = m.members.length === 1 && !isGroupId(m.source) && !isGroupId(m.target);
     const id = single ? first.id : `agg|${key}`;
     m.members.forEach((e) => edgeOf.set(e.id, id));
+    edgeMembers.set(
+      id,
+      m.members.map((e) => e.id),
+    );
     const bp = share(m.amount);
     const roles = new Set(m.members.map((e) => e.role.role));
     const peel = m.members.every((e) => e.peel);
@@ -415,7 +426,10 @@ export function buildDisplay(view: TraceView, o: DisplayOptions): Display {
         id,
         source: m.source,
         target: m.target,
-        label: formatBtcShort(m.amount) + (peel ? " (peel)" : "") + (m.members.length > 1 ? ` ×${m.members.length}` : ""),
+        label:
+          formatBtcShort(m.amount) +
+          (peel ? " (peel)" : "") +
+          (m.members.length > 1 ? (loop ? `, to itself ${m.members.length} times` : ` ×${m.members.length}`) : ""),
         width,
         // Keep the amount clear of the line and its arrow, however thick the line is.
         labelDy: -Math.round(6 + 1.6 * width),
@@ -449,6 +463,7 @@ export function buildDisplay(view: TraceView, o: DisplayOptions): Display {
     elements,
     nodeOf,
     edgeOf,
+    edgeMembers,
     groups,
     hidden: view.graph.nodes.filter((n) => !visible.has(n.id) && linked.has(n.id)).length,
     unlinked: view.graph.nodes.filter((n) => !visible.has(n.id) && !linked.has(n.id)).length,

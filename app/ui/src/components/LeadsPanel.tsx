@@ -63,12 +63,117 @@ function LeadRow({
         {lead.category && <span>{categoryName(lead.category)}</span>}
         <Meter confidence={lead.confidence} />
         <Basis claim={lead.claim} />
-        <span>
-          {lead.hops} hop{lead.hops === 1 ? "" : "s"}
+        <span title="Transactions between the start of the trace and this lead">
+          {lead.hops === 0 ? "at the start" : `${lead.hops} hop${lead.hops === 1 ? "" : "s"}`}
         </span>
         {lead.first_time !== null && <span>{formatUtcDate(lead.first_time)}</span>}
       </div>
     </li>
+  );
+}
+
+/** One slice of the result: an endpoint category, funds at rest, not followed, or fees. */
+interface Bucket {
+  key: string;
+  name: string;
+  colour: string;
+  amount: number;
+  leads: number;
+}
+
+export function bucketOf(lead: Lead): string {
+  return lead.kind.kind === "endpoint" ? `cat:${lead.category ?? "unknown_service"}` : lead.kind.kind;
+}
+
+function buckets(view: TraceView): Bucket[] {
+  const r = view.report;
+  const map = new Map<string, Bucket>();
+  for (const l of r.leads) {
+    const key = bucketOf(l);
+    const b =
+      map.get(key) ??
+      map
+        .set(key, {
+          key,
+          name:
+            l.kind.kind === "endpoint"
+              ? categoryName(l.category ?? "unknown_service")
+              : l.kind.kind === "at_rest"
+                ? "At rest (unspent)"
+                : l.kind.kind === "mined"
+                  ? "Mined"
+                  : "Not followed",
+          colour:
+            l.kind.kind === "at_rest"
+              ? "var(--n-at_rest)"
+              : l.kind.kind === "unexplored"
+                ? "var(--n-unexplored)"
+                : categoryColor(l.category),
+          amount: 0,
+          leads: 0,
+        })
+        .get(key)!;
+    b.amount += l.amount;
+    b.leads += 1;
+  }
+  const order = (b: Bucket) => (b.key.startsWith("cat:") ? 0 : b.key === "mined" ? 1 : b.key === "at_rest" ? 2 : 3);
+  const list = [...map.values()].sort((a, b) => order(a) - order(b) || b.amount - a.amount);
+  const rest = r.stats.fees + r.stats.below_threshold;
+  if (rest > 0) list.push({ key: "rest", name: "Fees and small branches", colour: "var(--rule)", amount: rest, leads: 0 });
+  return list;
+}
+
+/** Where the traced amount went, by kind of endpoint, at a glance; rows filter the leads. */
+function Exposure({
+  view,
+  filter,
+  onFilter,
+}: {
+  view: TraceView;
+  filter: string | null;
+  onFilter: (key: string | null) => void;
+}) {
+  const total = view.report.seed_amount;
+  const list = buckets(view);
+  return (
+    <section aria-label="Summary" className="exposure">
+      <div className="exposure-bar" aria-hidden="true">
+        {list.map((b) => (
+          <span
+            key={b.key}
+            title={`${b.name}: ${formatShare(b.amount, total)}`}
+            style={{
+              width: `${Math.max(Number(shareBasisPoints(b.amount, total)) / 100, 0.6)}%`,
+              background: b.colour,
+            }}
+          />
+        ))}
+      </div>
+      <ul className="exposure-list">
+        {list.map((b) => (
+          <li key={b.key}>
+            <button
+              type="button"
+              className="exposure-row"
+              aria-pressed={filter === b.key}
+              disabled={b.key === "rest"}
+              title={b.key === "rest" ? "Not a lead: paid as fees, or branches too small to follow" : "Show only these leads"}
+              onClick={() => onFilter(filter === b.key ? null : b.key)}
+            >
+              <span className="swatch" style={{ background: b.colour }} />
+              <span className="exposure-name">
+                {b.name}
+                {b.leads > 0 && <span className="muted small"> · {b.leads} lead{b.leads === 1 ? "" : "s"}</span>}
+              </span>
+              <span className="exposure-amount">
+                <Btc sats={b.amount} />
+              </span>
+              <span className="muted small exposure-share">{formatShare(b.amount, total)}</span>
+            </button>
+          </li>
+        ))}
+      </ul>
+    </section>
   );
 }
 
@@ -83,12 +188,19 @@ export function LeadsPanel({
 }) {
   const r = view.report;
   const [showOpen, setShowOpen] = useState(false);
-  const indexed = r.leads.map((lead, index) => ({ lead, index }));
+  const [filter, setFilter] = useState<string | null>(null);
+  useEffect(() => setFilter(null), [view]);
+  const indexed = r.leads
+    .map((lead, index) => ({ lead, index }))
+    .filter((x) => filter === null || bucketOf(x.lead) === filter);
   const found = indexed.filter((x) => x.lead.kind.kind !== "unexplored");
   const open = indexed.filter((x) => x.lead.kind.kind === "unexplored");
   const openTotal = open.reduce((s, x) => s + x.lead.amount, 0);
   // With no endpoint reached, the branches not followed are the result: show them.
   useEffect(() => setShowOpen(found.length === 0), [view, found.length]);
+  useEffect(() => {
+    if (filter === "unexplored") setShowOpen(true);
+  }, [filter]);
   // Keep a selected branch visible.
   useEffect(() => {
     if (selectedLead !== null && r.leads[selectedLead]?.kind.kind === "unexplored") setShowOpen(true);
@@ -108,9 +220,19 @@ export function LeadsPanel({
         </p>
       </section>
 
+      <Exposure view={view} filter={filter} onFilter={setFilter} />
+
       <section aria-label="Leads">
         <h2 style={{ marginBottom: 8 }}>{forward ? "Where the funds ended up" : "Where the funds came from"}</h2>
-        {found.length === 0 && (
+        {filter !== null && (
+          <p className="small">
+            Showing one kind only.{" "}
+            <button type="button" className="btn subtle" onClick={() => setFilter(null)}>
+              Show all leads
+            </button>
+          </p>
+        )}
+        {found.length === 0 && filter === null && (
           <p className="muted small">
             No endpoint was reached within the limits. Raise the hop or transaction limits, or trace one of
             the branches below on its own.
