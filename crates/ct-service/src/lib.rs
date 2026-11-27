@@ -408,6 +408,7 @@ fn shape_view(shape: &TxShape) -> ShapeView {
     let (kind, coinjoin_confidence, evidence) = match shape {
         TxShape::Coinbase => ("coinbase", None, vec![]),
         TxShape::CoinJoin(i) => ("coinjoin", Some(i.confidence), i.evidence.clone()),
+        TxShape::WhirlpoolTx0(i) => ("whirlpool_tx0", Some(i.confidence), i.evidence.clone()),
         TxShape::Consolidation { .. } => ("consolidation", None, vec![]),
         TxShape::BatchPayout { .. } => ("batch_payout", None, vec![]),
         TxShape::Simple => ("simple", None, vec![]),

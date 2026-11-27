@@ -10,7 +10,7 @@ use ct_core::{Confidence, UtxoTx};
 use serde::{Deserialize, Serialize};
 
 use super::change::ChangeGuess;
-use super::coinjoin::{CoinJoinInfo, detect_coinjoin};
+use super::coinjoin::{CoinJoinInfo, Tx0Info, detect_coinjoin, detect_whirlpool_tx0};
 use super::spendable_outputs;
 
 /// Distinct input addresses for a consolidation to suggest a service sweep (Medium).
@@ -32,6 +32,9 @@ pub enum TxShape {
     /// Newly mined coins.
     Coinbase,
     CoinJoin(CoinJoinInfo),
+    /// One wallet preparing coins for Whirlpool: its premix outputs go on into mixes; its
+    /// change stays with the wallet.
+    WhirlpoolTx0(Tx0Info),
     /// Many inputs swept into one or two outputs.
     Consolidation {
         distinct_inputs: usize,
@@ -67,6 +70,10 @@ impl TxShape {
                 info.equal_count,
                 info.equal_value
             ),
+            TxShape::WhirlpoolTx0(info) => format!(
+                "Whirlpool Tx0 ({} premix outputs of {} sats)",
+                info.premix_count, info.premix_value
+            ),
             TxShape::Consolidation {
                 distinct_inputs, ..
             } => format!("consolidation of {distinct_inputs} addresses"),
@@ -81,6 +88,9 @@ impl TxShape {
 pub fn classify(tx: &UtxoTx) -> TxShape {
     if tx.is_coinbase() {
         return TxShape::Coinbase;
+    }
+    if let Some(info) = detect_whirlpool_tx0(tx) {
+        return TxShape::WhirlpoolTx0(info);
     }
     if let Some(info) = detect_coinjoin(tx) {
         return TxShape::CoinJoin(info);
@@ -198,6 +208,11 @@ mod tests {
             classify(&fixtures::tx("change_round_only")),
             TxShape::Simple
         );
+        // A Tx0 with 247 outputs is not a service batch payout.
+        assert!(matches!(
+            classify(&fixtures::tx("whirlpool_tx0_244premix")),
+            TxShape::WhirlpoolTx0(_)
+        ));
     }
 
     #[test]

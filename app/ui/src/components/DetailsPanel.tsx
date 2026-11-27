@@ -73,20 +73,29 @@ function nextTrace(
     if (k === "endpoint") {
       // Backward, an endpoint is where the funds came from: the end of the trail.
       if (!forward || !node.address) return null;
-      const deposit = view.graph.edges
-        .filter((e) => e.target === node.id && e.source !== e.target)
-        .sort((a, b) => b.amount - a.amount)[0];
-      if (!deposit) return null;
+      // One deposit transaction: the traced funds it paid to the address (all routes in
+      // that transaction), with that deposit's own mixing, not the lead's total.
+      const deposits = new Map<string, number>();
+      for (const f of r.flows)
+        if (f.to?.value === node.address) deposits.set(f.txid, (deposits.get(f.txid) ?? 0) + f.amount);
+      const [txid, share] = [...deposits].sort((a, b) => b[1] - a[1])[0] ?? [];
+      if (!txid || !share) return null;
+      const flows = r.flows.filter((f) => f.txid === txid && f.to?.value === node.address);
+      const others = deposits.size - 1;
       return {
         label: "Trace onward through this service",
         caution:
-          "A service pools many customers' funds: after a deposit, which payments carry these funds is an allocation, not a link. Records from the service are more reliable.",
+          "A service pools many customers' funds: after a deposit, which payments carry these funds is an allocation, not a link. Records from the service are more reliable." +
+          (others > 0
+            ? ` This follows the largest deposit (transaction ${shortId(txid)}); the ${others} other${others === 1 ? "" : "s"} would be separate traces.`
+            : ""),
         params: {
-          txid: deposit.txid,
+          txid,
           to: node.address,
           direction: "forward",
-          share: lead.amount,
-          mixed: lead.mixed_in ?? deposit.txid,
+          share,
+          // That deposit's own mixing; the service's own spends then mix (the engine marks it).
+          mixed: flows.find((f) => f.mixed_in)?.mixed_in ?? undefined,
           from: r.seed,
           run: true,
         },
@@ -109,7 +118,6 @@ function nextTrace(
   const flows = r.flows.filter(
     (f) => f.txid === edge.txid && (forward ? f.to?.value === node.address : f.from?.value === node.address),
   );
-  const flow = flows[0];
   if (forward) {
     // Everything this transaction's traced funds paid to the address (all its outputs
     // there), so an output traced in full is continued in full.
@@ -127,17 +135,26 @@ function nextTrace(
       },
     };
   }
-  const coin = flow?.from_coin?.split(":");
-  if (!coin || coin.length !== 2) return null;
+  // Backward: one coin the address spent in that transaction, with that coin's own share
+  // (the address may have spent several coins there).
+  const coins = new Map<string, number>();
+  for (const f of flows) if (f.from_coin) coins.set(f.from_coin, (coins.get(f.from_coin) ?? 0) + f.amount);
+  const [coinRef, coinShare] = [...coins].sort((a, b) => b[1] - a[1])[0] ?? [];
+  const coin = coinRef?.split(":");
+  if (!coin || coin.length !== 2 || !coinShare) return null;
+  const moreCoins = coins.size - 1;
   return {
     label: again,
-    caution,
+    caution:
+      [caution, moreCoins > 0 ? `Follows the largest of the ${coins.size} coins this address spent there.` : null]
+        .filter(Boolean)
+        .join(" ") || undefined,
     params: {
       txid: coin[0]!,
       vout: Number(coin[1]),
       direction: "backward",
-      share: edge.amount,
-      mixed: flow?.mixed_in ?? undefined,
+      share: coinShare,
+      mixed: flows.find((f) => f.from_coin === coinRef && f.mixed_in)?.mixed_in ?? undefined,
       from: r.seed,
       run: true,
     },

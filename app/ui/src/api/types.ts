@@ -153,7 +153,7 @@ export interface AddressView {
 // ---- transaction ----------------------------------------------------------------------
 
 export interface ShapeView {
-  kind: "simple" | "coinbase" | "coinjoin" | "consolidation" | "batch_payout";
+  kind: "simple" | "coinbase" | "coinjoin" | "whirlpool_tx0" | "consolidation" | "batch_payout";
   description: string;
   service_confidence: Confidence | null;
   coinjoin_confidence: Confidence | null;
@@ -331,6 +331,19 @@ export interface TraceReport {
   flows: Flow[];
   labels_seen: LabelSeen[];
   stats: TraceStats;
+  /** The largest branches under the minimum, with their coins (at most 50). */
+  small_branches?: SmallBranch[];
+}
+
+/** A branch under the minimum, not followed. Forward: the coin txid:vout. Backward: the
+ * output of txid whose funding was not followed further back. */
+export interface SmallBranch {
+  txid: string;
+  vout: number | null;
+  address: Address | null;
+  amount: number;
+  hop: number;
+  mixed_in: string | null;
 }
 
 export type NodeKind = "address" | "transaction" | "no_address";

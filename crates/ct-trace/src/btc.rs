@@ -20,8 +20,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::labels::LabelLookup;
 use crate::report::{
-    Direction, Flow, FlowRole, LabelSeen, Lead, LeadKind, Progress, SeedOutput, StopReason,
-    TraceConfig, TraceReport, TraceStats,
+    Direction, Flow, FlowRole, LabelSeen, Lead, LeadKind, Progress, SMALL_BRANCHES_LISTED,
+    SeedOutput, SmallBranch, StopReason, TraceConfig, TraceReport, TraceStats,
 };
 
 /// Where a trace starts.
@@ -54,6 +54,17 @@ impl Seed {
 
 /// Run a trace. Fails only if the seed itself cannot be loaded; later failures become
 /// "unexplored" leads.
+/// Branches under 0.1% of the traced amount are not followed, and none under 1,000 sats,
+/// except for tiny traces (under 100,000 sats), where the floor is 1% of the amount.
+pub fn default_min_amount(seed_amount: u64) -> u64 {
+    let floor = if seed_amount >= 100_000 {
+        1_000
+    } else {
+        (seed_amount / 100).max(1)
+    };
+    (seed_amount / 1_000).max(floor)
+}
+
 pub async fn trace_bitcoin(
     provider: &dyn BitcoinProvider,
     labels: &dyn LabelLookup,
@@ -76,6 +87,8 @@ pub async fn trace_bitcoin(
         stats: TraceStats::default(),
         via: None,
         mixed_in: None,
+        whole_tx_seed: matches!(seed, Seed::Tx { .. }),
+        small: Vec::new(),
     };
     let seed_tx = t.tx(seed.txid()).await?;
     let seed_outputs: Vec<(u32, Option<Address>, u64)> = match &seed {
@@ -118,10 +131,16 @@ pub async fn trace_bitcoin(
         (Direction::Backward, Seed::Tx { .. }) => seed_tx.total_out(),
         _ => seed_outputs.iter().map(|(_, _, v)| v).sum(),
     };
-    // Continuing an earlier trace: only its share of the seed is followed.
-    let seed_amount = config
-        .seed_share
-        .map_or(full_amount, |s| s.min(full_amount));
+    // Continuing an earlier trace: only its share of the seed is followed. A share larger
+    // than the seed means the continuation was set up wrongly: say so, never clip silently.
+    if let Some(share) = config.seed_share
+        && share > full_amount
+    {
+        return Err(ProviderError::InvalidInput(format!(
+            "the share to follow ({share} sats) is larger than the start ({full_amount} sats)"
+        )));
+    }
+    let seed_amount = config.seed_share.unwrap_or(full_amount);
     // Following only a share of the seed: the rest of it is other funds, so amounts are
     // allocations from the start (named by the earlier trace's mixing if known).
     let carried_mixing = config
@@ -145,7 +164,12 @@ pub async fn trace_bitcoin(
     };
     let min_amount = config
         .min_amount
-        .unwrap_or_else(|| (seed_amount / 1_000).max(1_000));
+        .unwrap_or_else(|| default_min_amount(seed_amount));
+    if min_amount > seed_amount {
+        return Err(ProviderError::InvalidInput(format!(
+            "the minimum branch size ({min_amount} sats) is larger than the amount traced ({seed_amount} sats): nothing would be followed"
+        )));
+    }
     let seed_list: Vec<SeedOutput> = seed_outputs
         .iter()
         .map(|(vout, address, amount)| SeedOutput {
@@ -158,7 +182,14 @@ pub async fn trace_bitcoin(
         .collect();
 
     // A label on the start address is reported too (it never stops the trace there).
-    for (_, address, _) in &seed_outputs {
+    // Forward from a whole transaction, its outputs are checked as endpoints instead.
+    let start_outputs: &[(u32, Option<Address>, u64)] =
+        if t.whole_tx_seed && config.direction == Direction::Forward {
+            &[]
+        } else {
+            &seed_outputs
+        };
+    for (_, address, _) in start_outputs {
         if let Some(a) = address
             && let Some(l) = labels.lookup(a)
         {
@@ -213,6 +244,19 @@ pub async fn trace_bitcoin(
     }
 
     let mut leads = t.leads;
+    // A lead reached by several routes: if the mixing happened on another route than the
+    // one shown (the shortest), say so, so its transaction is not looked for on this path.
+    for l in &mut leads {
+        if let (Some(m), Claim::Inference { evidence, .. }) = (&l.mixed_in, &mut l.claim)
+            && !l.path.contains(m)
+            && l.txid.as_deref() != Some(m.as_str())
+            && carried_mixing.as_ref() != Some(m)
+        {
+            evidence.push(format!(
+                "transaction {m} is on another route that also reaches this lead, not on the route shown"
+            ));
+        }
+    }
     leads.sort_by(|a, b| b.amount.cmp(&a.amount).then(a.hops.cmp(&b.hops)));
     Ok(TraceReport {
         direction: config.direction,
@@ -226,6 +270,12 @@ pub async fn trace_bitcoin(
         flows: t.flows,
         labels_seen: t.labels_seen,
         stats: t.stats,
+        small_branches: {
+            let mut b = t.small;
+            b.sort_by(|x, y| y.amount.cmp(&x.amount).then(x.hop.cmp(&y.hop)));
+            b.truncate(SMALL_BRANCHES_LISTED);
+            b
+        },
     })
 }
 
@@ -296,6 +346,11 @@ struct Tracer<'a> {
     via: Option<Address>,
     /// Mixing on the way to the coin being processed; stamped on leads as `mixed_in`.
     mixed_in: Option<String>,
+    /// The trace starts from a whole transaction: its outputs are where the funds went, so
+    /// they are checked like any other (an output to an exchange is an endpoint at hop 0).
+    whole_tx_seed: bool,
+    /// Branches under the minimum, for the report's list of the largest.
+    small: Vec<SmallBranch>,
 }
 
 /// A service named through labels on addresses of the same wallet.
@@ -391,10 +446,16 @@ impl<'a> Tracer<'a> {
     /// `endpoint_for` from what is already known (labels, address checks made earlier in
     /// this trace), without network requests.
     fn known_endpoint(&self, address: &Address) -> Option<(String, EntityCategory, Claim)> {
-        if let Some(label) = self.labels.lookup(address)
-            && self.stops_at(&label)
-        {
-            return Some((label_title(&label), label.category, label.claim));
+        if let Some(label) = self.labels.lookup(address) {
+            if self.stops_at(&label) {
+                return Some((label_title(&label), label.category, label.claim));
+            }
+            // A perpetrator's or a person's labelled wallet is followed through: its
+            // activity does not make it a service (a scam address that collected hundreds
+            // of victim payments looks "busy").
+            if !label.category.is_endpoint() {
+                return None;
+            }
         }
         let hint = self
             .summaries
@@ -418,7 +479,12 @@ impl<'a> Tracer<'a> {
             if self.stops_at(&label) {
                 return Some((label_title(&label), label.category, label.claim));
             }
+            // Followed through whatever its activity (see `known_endpoint`).
+            let follow = !label.category.is_endpoint();
             self.saw_label(label);
+            if follow {
+                return None;
+            }
         }
         if !self.config.check_addresses {
             return None;
@@ -564,6 +630,11 @@ impl<'a> Tracer<'a> {
     }
 
     /// Whether a label is strong enough, and of an endpoint category, to stop the trace.
+    /// The coin the user chose to trace from (not every output of a whole-transaction seed).
+    fn is_start(&self, hop: u32) -> bool {
+        hop == 0 && !self.whole_tx_seed
+    }
+
     fn stops_at(&self, label: &Label) -> bool {
         label.category.is_endpoint() && label.claim.confidence() >= self.config.stop_confidence
     }
@@ -807,7 +878,7 @@ impl<'a> Tracer<'a> {
                     // A small amount reaching an address already known as an endpoint still
                     // belongs to it (e.g. a test payment before the main deposit). Only what is
                     // already known is used: no extra lookups for small amounts.
-                    if coin.hop > 0
+                    if !self.is_start(coin.hop)
                         && let Some(addr) = coin.address.clone()
                         && let Some((title, category, claim)) = self.known_endpoint(&addr)
                     {
@@ -827,11 +898,19 @@ impl<'a> Tracer<'a> {
                         continue;
                     }
                     self.stats.below_threshold += coin.amount;
+                    self.small.push(SmallBranch {
+                        txid: coin.txid.clone(),
+                        vout: Some(coin.vout),
+                        address: coin.address.clone(),
+                        amount: coin.amount,
+                        hop: coin.hop,
+                        mixed_in: coin.mixed_at.clone(),
+                    });
                     continue;
                 }
                 // Endpoint at the address holding the coin (not for the seed itself: the user
                 // chose to trace from there).
-                if coin.hop > 0
+                if !self.is_start(coin.hop)
                     && let Some(addr) = coin.address.clone()
                     && let Some((title, category, claim)) = self.endpoint_for(&addr).await
                 {
@@ -868,9 +947,25 @@ impl<'a> Tracer<'a> {
                 };
                 let Some(spending_txid) = spend.spending_txid.clone().filter(|_| spend.spent)
                 else {
+                    // Unconfirmed: the transaction can still be replaced or dropped.
+                    let (title, claim) = if coin.time.is_none() {
+                        (
+                            "Funds at rest (unconfirmed)",
+                            Claim::Inference {
+                                heuristic: "unconfirmed".into(),
+                                confidence: Confidence::Medium,
+                                evidence: vec![format!(
+                                    "transaction {} is not confirmed yet: it can still be replaced or dropped, so the funds may not end up here",
+                                    coin.txid
+                                )],
+                            },
+                        )
+                    } else {
+                        ("Funds at rest (unspent)", Claim::Fact)
+                    };
                     self.add_lead(
                         LeadKind::AtRest,
-                        "Funds at rest (unspent)".into(),
+                        title.into(),
                         None,
                         coin.address.clone(),
                         Some(coin.txid.clone()),
@@ -878,7 +973,7 @@ impl<'a> Tracer<'a> {
                         coin.amount,
                         coin.time,
                         coin.hop,
-                        Claim::Fact,
+                        claim,
                         &coin.path,
                     );
                     continue;
@@ -972,8 +1067,11 @@ impl<'a> Tracer<'a> {
                 }
                 // Not for the seed coin: the user chose to trace from there (a scammer's address
                 // that sweeps many victims' payments is not a service).
-                let (service, dormant_note) =
-                    at_start(coin.hop, self.service_shape(&stx, &shape).await, &shape);
+                let (service, dormant_note) = at_start(
+                    self.is_start(coin.hop),
+                    self.service_shape(&stx, &shape).await,
+                    &shape,
+                );
                 if let Some(conf) = service {
                     let what = match &shape {
                         TxShape::Consolidation {
@@ -1062,11 +1160,22 @@ impl<'a> Tracer<'a> {
                 if let Some(m) = (0..spendable.len()).max_by_key(|&i| spendable[i].value) {
                     shares[m] += target.saturating_sub(shares.iter().sum::<u64>());
                 }
+                // A Whirlpool Tx0: the premix outputs go on into mixes (one mixer lead for
+                // all of them); the change and the coordinator fee are followed as usual.
+                let tx0 = match &shape {
+                    TxShape::WhirlpoolTx0(info) => Some(info.clone()),
+                    _ => None,
+                };
+                let mut premix = 0u64;
                 for (o, share) in spendable.into_iter().zip(shares) {
                     if share == 0 {
                         continue;
                     }
                     allocated += share;
+                    if tx0.as_ref().is_some_and(|i| o.value == i.premix_value) {
+                        premix += share;
+                        continue;
+                    }
                     let role = match &change {
                         Some(c) if c.output == o.index && c.confidence.followable() => {
                             FlowRole::Change {
@@ -1102,6 +1211,45 @@ impl<'a> Tracer<'a> {
                             path: path.clone(),
                             mixed_at: mixed_at.clone(),
                         },
+                    );
+                }
+                if let Some(info) = tx0
+                    && premix > 0
+                {
+                    self.flows.push(Flow {
+                        txid: stx.txid.clone(),
+                        hop,
+                        time,
+                        from: coin.address.clone(),
+                        to: None,
+                        from_coin: Some(format!("{}:{}", coin.txid, coin.vout)),
+                        to_coin: Some(stx.txid.clone()),
+                        amount: premix,
+                        role: FlowRole::Payment,
+                        peel: false,
+                        note: Some(shape.describe()),
+                        mixed_in: self.mixed_in.clone(),
+                    });
+                    self.add_lead(
+                        LeadKind::Endpoint,
+                        format!(
+                            "Likely entering Whirlpool: {} premix outputs ({} BTC pool)",
+                            info.premix_count,
+                            ct_core::Amount::new(info.pool as u128, 8)
+                        ),
+                        Some(EntityCategory::Mixer),
+                        None,
+                        Some(stx.txid.clone()),
+                        None,
+                        premix,
+                        time,
+                        hop,
+                        Claim::Inference {
+                            heuristic: "coinjoin.whirlpool_tx0".into(),
+                            confidence: info.confidence,
+                            evidence: info.evidence,
+                        },
+                        &path,
                     );
                 }
                 self.stats.fees += coin.amount - allocated;
@@ -1249,6 +1397,16 @@ impl<'a> Tracer<'a> {
                 let amount = src.amount();
                 if amount < min_amount {
                     self.stats.below_threshold += amount;
+                    for r in &src.receivers {
+                        self.small.push(SmallBranch {
+                            txid: src.txid.clone(),
+                            vout: r.vout(),
+                            address: r.address.clone(),
+                            amount: r.amount,
+                            hop: src.hop,
+                            mixed_in: src.mixed_at.clone(),
+                        });
+                    }
                     continue;
                 }
                 // Same limit as forward: funds are shown up to `max_hops` transactions away.
@@ -1569,18 +1727,24 @@ fn allocation_claim(claim: Claim, mixed_in: Option<&str>) -> Claim {
 /// be a service sweeping deposits (then the start address is a deposit address there), or
 /// its owner gathering funds, e.g. a scammer sweeping victims' payments. The note says so.
 fn at_start(
-    hop: u32,
+    start: bool,
     verdict: (Option<Confidence>, Option<String>),
     shape: &TxShape,
 ) -> (Option<Confidence>, Option<String>) {
     match verdict {
-        (Some(_), note) if hop == 0 => (
+        (Some(_), note) if start => (
             None,
             note.or_else(|| {
-                Some(format!(
-                    "{}: the start address was swept with others, either by a service (then it is a deposit address there) or by its owner gathering funds; followed because the trace starts here",
-                    shape.describe()
-                ))
+                Some(match shape {
+                    TxShape::BatchPayout { .. } => format!(
+                        "{}: the start address paid out in a batch, either as a service paying customers or as its owner splitting funds; followed because the trace starts here",
+                        shape.describe()
+                    ),
+                    _ => format!(
+                        "{}: the start address was swept with others, either by a service (then it is a deposit address there) or by its owner gathering funds; followed because the trace starts here",
+                        shape.describe()
+                    ),
+                })
             }),
         ),
         v => v,

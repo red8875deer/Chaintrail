@@ -22,6 +22,9 @@ pub enum CoinJoinKind {
     /// JoinMarket-style or other: several equal outputs plus change, inputs from several
     /// owners.
     Generic,
+    /// Many addresses' coins merged into equal "chips" of a power-of-two multiple of
+    /// 0.001 BTC with no change (how ChipMixer prepared its chips).
+    ChipSplit,
 }
 
 impl CoinJoinKind {
@@ -30,6 +33,7 @@ impl CoinJoinKind {
             CoinJoinKind::Whirlpool => "Whirlpool-style CoinJoin",
             CoinJoinKind::WabiSabi => "WabiSabi CoinJoin (Wasabi-style)",
             CoinJoinKind::Generic => "CoinJoin (equal-output pattern)",
+            CoinJoinKind::ChipSplit => "chip split (ChipMixer-style)",
         }
     }
 }
@@ -44,6 +48,12 @@ pub struct CoinJoinInfo {
     pub confidence: Confidence,
     pub evidence: Vec<String>,
 }
+
+/// Generic CoinJoin: at most this many inputs per equal output. Each participant brings a
+/// few inputs; hundreds of inputs merged into a dozen equal outputs are one owner.
+pub const GENERIC_MAX_INPUTS_PER_EQUAL: usize = 6;
+/// Chip split: at least this many equal chips.
+pub const CHIP_MIN_COUNT: usize = 5;
 
 /// Minimum inputs and outputs for a WabiSabi round.
 const WABISABI_MIN_IO: usize = 50;
@@ -138,13 +148,54 @@ pub fn detect_coinjoin(tx: &UtxoTx) -> Option<CoinJoinInfo> {
         }
     }
 
+    // Chip split: every output is one chip value (2^k × 0.001 BTC) except at most one small
+    // remainder; inputs from several addresses. A pattern, not proof: Medium.
+    let remainders = outputs.iter().filter(|v| **v != equal_value).count();
+    if equal_count >= CHIP_MIN_COUNT
+        && is_chip_value(equal_value)
+        && remainders <= 1
+        && outputs
+            .iter()
+            .all(|v| *v == equal_value || *v < equal_value / 10)
+        && distinct_inputs >= 2
+        && separate_owners(distinct_equal, equal_count)
+    {
+        return Some(CoinJoinInfo {
+            kind: CoinJoinKind::ChipSplit,
+            equal_value,
+            equal_count,
+            confidence: Confidence::Medium,
+            evidence: vec![
+                format!(
+                    "{n_in} inputs from {distinct_inputs} addresses merged into {equal_count} outputs of exactly {equal_value} sats ({} × 0.001 BTC)",
+                    equal_value / 100_000
+                ),
+                "no change output: chip-sized outputs as prepared by mixing services such as ChipMixer".into(),
+            ],
+        });
+    }
+
     // Generic equal-output CoinJoin (e.g. JoinMarket): at least 3 equal outputs, at least
-    // as many inputs as equal outputs (each participant brings an input), inputs from
-    // several addresses, and no more than one change output per participant.
+    // as many inputs as equal outputs (each participant brings an input) but not hundreds
+    // per output, inputs from several addresses, and no more than one change output per
+    // participant.
+    // Outputs at a repeated value: Wasabi 1.x rounds pay several mixing levels (v, ~2v,
+    // ~4v…), each a group of equal outputs; the rest is change.
+    let levels: Vec<(u64, usize)> = {
+        let mut l: Vec<_> = counts
+            .iter()
+            .filter(|(_, n)| **n >= 2)
+            .map(|(v, n)| (*v, *n))
+            .collect();
+        l.sort_by_key(|(v, n)| (std::cmp::Reverse(*n), *v));
+        l
+    };
+    let repeated: usize = levels.iter().map(|(_, n)| n).sum();
     if equal_count >= 3
         && n_in >= equal_count
+        && n_in <= GENERIC_MAX_INPUTS_PER_EQUAL * equal_count
         && distinct_inputs >= 2
-        && n_out <= 2 * equal_count + 1
+        && n_out <= 2 * repeated + 1
         && equal_value > 0
         && distinct_equal >= 3
         && separate_owners(distinct_equal, equal_count)
@@ -154,18 +205,113 @@ pub fn detect_coinjoin(tx: &UtxoTx) -> Option<CoinJoinInfo> {
         } else {
             Confidence::Medium
         };
+        let mut evidence = vec![
+            format!("{equal_count} outputs of exactly {equal_value} sats"),
+            format!("{n_in} inputs from {distinct_inputs} addresses, {n_out} outputs"),
+        ];
+        if levels.len() > 1 {
+            evidence.push(format!(
+                "{} groups of equal outputs ({}), {} other outputs (change)",
+                levels.len(),
+                levels
+                    .iter()
+                    .take(5)
+                    .map(|(v, n)| format!("{n} × {v} sats"))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                n_out - repeated
+            ));
+        }
         return Some(CoinJoinInfo {
             kind: CoinJoinKind::Generic,
             equal_value,
             equal_count,
             confidence,
-            evidence: vec![
-                format!("{equal_count} outputs of exactly {equal_value} sats"),
-                format!("{n_in} inputs from {distinct_inputs} addresses, {n_out} outputs"),
-            ],
+            evidence,
         });
     }
     None
+}
+
+/// ChipMixer-style chip values: 0.001 BTC times a power of two, up to 8.192 BTC.
+pub fn is_chip_value(v: u64) -> bool {
+    v % 100_000 == 0 && (v / 100_000).is_power_of_two() && v / 100_000 <= 8_192
+}
+
+/// Whirlpool pool denominations (sats).
+pub const WHIRLPOOL_POOLS: [u64; 4] = [100_000, 1_000_000, 5_000_000, 50_000_000];
+
+/// A Whirlpool Tx0: one wallet splits coins into "premix" outputs for one pool (the pool
+/// amount plus a mining-fee allowance), pays the coordinator fee and keeps change, with an
+/// OP_RETURN. The premix outputs can only go on into Whirlpool mixes.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Tx0Info {
+    /// Pool denomination (sats).
+    pub pool: u64,
+    /// Value of each premix output (sats).
+    pub premix_value: u64,
+    pub premix_count: usize,
+    pub confidence: Confidence,
+    pub evidence: Vec<String>,
+}
+
+/// Premix outputs are at most this much above the pool amount (fee allowance).
+const TX0_MAX_PREMIX_OVER_POOL_PCT: u64 = 5;
+/// Outputs besides premix and OP_RETURN (coordinator fee, change).
+const TX0_MAX_OTHER_OUTPUTS: usize = 3;
+
+pub fn detect_whirlpool_tx0(tx: &UtxoTx) -> Option<Tx0Info> {
+    if tx.is_coinbase() || tx.inputs.is_empty() {
+        return None;
+    }
+    let op_returns = tx
+        .outputs
+        .iter()
+        .filter(|o| !o.script_type.is_spendable())
+        .count();
+    if op_returns != 1 {
+        return None;
+    }
+    let outputs: Vec<_> = spendable_outputs(tx).collect();
+    let mut counts: HashMap<u64, usize> = HashMap::new();
+    for o in &outputs {
+        *counts.entry(o.value).or_default() += 1;
+    }
+    let (premix_value, premix_count) = counts
+        .iter()
+        .max_by_key(|(v, n)| (**n, **v))
+        .map(|(v, n)| (*v, *n))?;
+    if premix_count < 2 || outputs.len() - premix_count > TX0_MAX_OTHER_OUTPUTS {
+        return None;
+    }
+    let pool = WHIRLPOOL_POOLS.into_iter().find(|p| {
+        premix_value >= *p && premix_value <= p + p * TX0_MAX_PREMIX_OVER_POOL_PCT / 100
+    })?;
+    let distinct = outputs
+        .iter()
+        .filter(|o| o.value == premix_value)
+        .filter_map(|o| o.address.as_ref())
+        .collect::<HashSet<_>>()
+        .len();
+    if distinct != premix_count {
+        return None;
+    }
+    Some(Tx0Info {
+        pool,
+        premix_value,
+        premix_count,
+        confidence: Confidence::High,
+        evidence: vec![
+            format!(
+                "{premix_count} outputs of exactly {premix_value} sats: premix for the {} BTC Whirlpool pool",
+                ct_core::Amount::new(pool as u128, 8)
+            ),
+            format!(
+                "an OP_RETURN and {} other output(s) (coordinator fee, change), as in a Whirlpool Tx0",
+                outputs.len() - premix_count
+            ),
+        ],
+    })
 }
 
 /// WabiSabi standard denominations: 2^n, 3^n, 2·3^n, 10^n, 2·10^n, 5·10^n sats, from
@@ -227,6 +373,62 @@ mod tests {
         assert!(detect_coinjoin(&fixtures::tx("batch_payout_156out")).is_none());
         // Consolidation: 85 inputs, 1 output.
         assert!(detect_coinjoin(&fixtures::tx("consolidation_85in")).is_none());
+    }
+
+    #[test]
+    fn wasabi_1_round_with_mixing_levels() {
+        // 82 inputs, 161 outputs: 67 × 0.1004 BTC, 25 × ~2x, 13 × ~4x, 6 × ~8x, 2 × ~16x,
+        // and 48 change outputs.
+        let info = detect_coinjoin(&fixtures::tx("coinjoin_wasabi1_161out")).unwrap();
+        assert_eq!(info.kind, CoinJoinKind::Generic);
+        assert_eq!(info.confidence, Confidence::High);
+        assert_eq!(info.equal_count, 67);
+        assert!(
+            info.evidence.iter().any(|e| e.contains("5 groups")),
+            "{:?}",
+            info.evidence
+        );
+    }
+
+    #[test]
+    fn postmix_merge_is_not_a_coinjoin() {
+        // 278 Whirlpool postmix coins (0.05 BTC each) merged into 12 × 1 BTC + 4 × 0.475:
+        // one owner, not hundreds of inputs per participant.
+        assert!(detect_coinjoin(&fixtures::tx("postmix_merge_278in")).is_none());
+    }
+
+    #[test]
+    fn chip_split_is_named_as_such() {
+        // 42 inputs into 30 × 1.024 BTC (1024 × 0.001) and 2,339 sats: chips, not CoinJoin.
+        let info = detect_coinjoin(&fixtures::tx("chip_split_42in")).unwrap();
+        assert_eq!(info.kind, CoinJoinKind::ChipSplit);
+        assert_eq!(info.confidence, Confidence::Medium);
+        assert_eq!(info.equal_value, 102_400_000);
+        assert!(is_chip_value(100_000) && is_chip_value(819_200_000));
+        assert!(!is_chip_value(46_400_000) && !is_chip_value(1_638_400_000));
+    }
+
+    #[test]
+    fn whirlpool_tx0() {
+        let tx = fixtures::tx("whirlpool_tx0_244premix");
+        let info = detect_whirlpool_tx0(&tx).unwrap();
+        assert_eq!(info.pool, 5_000_000);
+        assert_eq!(info.premix_value, 5_010_000);
+        assert_eq!(info.premix_count, 244);
+        // One input: not a CoinJoin.
+        assert!(detect_coinjoin(&tx).is_none());
+        for name in [
+            "batch_payout_156out",
+            "coinjoin_wabisabi",
+            "consolidation_85in",
+            "change_type_and_round",
+            "chip_split_42in",
+        ] {
+            assert!(
+                detect_whirlpool_tx0(&fixtures::tx(name)).is_none(),
+                "{name}"
+            );
+        }
     }
 
     #[test]

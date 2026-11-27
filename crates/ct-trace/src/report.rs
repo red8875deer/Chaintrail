@@ -19,8 +19,8 @@ pub struct TraceConfig {
     pub max_hops: u32,
     /// Maximum distinct transactions fetched (keeps free APIs happy and runs bounded).
     pub max_txs: u32,
-    /// Branches smaller than this (sats) are not followed. `None`: 0.1% of the seed amount,
-    /// at least 1,000 sats.
+    /// Branches smaller than this (sats) are not followed. `None`: see
+    /// [`crate::btc::default_min_amount`] (0.1% of the seed amount, at least 1,000 sats).
     pub min_amount: Option<u64>,
     /// Look up activity of addresses the funds reach, to detect busy service wallets.
     pub check_addresses: bool,
@@ -178,6 +178,25 @@ pub struct TraceStats {
     pub budget_exhausted: bool,
 }
 
+/// A branch smaller than the minimum, not followed (`docs/TRACING.md` §1.3). The largest
+/// are listed so they can be picked up with their own trace.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SmallBranch {
+    /// Forward: the coin (`txid:vout`). Backward: the output of `txid` whose funding was not
+    /// followed further back.
+    pub txid: String,
+    pub vout: Option<u32>,
+    pub address: Option<Address>,
+    /// Traced amount (sats).
+    pub amount: u64,
+    pub hop: u32,
+    /// Mixing on the way there (amount is then a pro-rata share).
+    pub mixed_in: Option<String>,
+}
+
+/// How many small branches a report lists (largest first); the rest are only counted.
+pub const SMALL_BRANCHES_LISTED: usize = 50;
+
 /// One output of the seed transaction included in the trace.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SeedOutput {
@@ -206,6 +225,9 @@ pub struct TraceReport {
     /// Labelled addresses passed through (not endpoints).
     pub labels_seen: Vec<LabelSeen>,
     pub stats: TraceStats,
+    /// The largest branches under the minimum (at most [`SMALL_BRANCHES_LISTED`]).
+    #[serde(default)]
+    pub small_branches: Vec<SmallBranch>,
 }
 
 impl TraceReport {

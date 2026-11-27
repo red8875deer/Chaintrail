@@ -209,6 +209,225 @@ async fn busy_wallet_stops_the_trace() {
 }
 
 #[tokio::test]
+async fn labelled_scam_wallet_is_followed_however_busy() {
+    // Address 7 collected many victim payments (busy), but it is labelled as a scam: the
+    // trace follows it on instead of calling it a service.
+    let t2 = tx(
+        &txid(2),
+        101,
+        &[(&txid(1), 0, &addr(2), BTC)],
+        &[(&addr(7), BTC - 1_000)],
+    );
+    let t3 = tx(
+        &txid(3),
+        102,
+        &[(&txid(2), 0, &addr(7), BTC - 1_000)],
+        &[(&addr(8), BTC - 2_000)],
+    );
+    let p = MemoryBitcoin::new([victim_payment(), t2, t3]).with_summary(&addr(7), 20_000, 5_000);
+    let labels = MemoryLabels::new([label(
+        7,
+        "Example scam",
+        EntityCategory::Scam,
+        Confidence::High,
+    )]);
+    let r = run_with_labels(
+        &p,
+        &labels,
+        Seed::Output {
+            txid: txid(1),
+            vout: 0,
+        },
+        forward(),
+    )
+    .await;
+    assert!(
+        r.leads
+            .iter()
+            .all(|l| l.category != Some(EntityCategory::UnknownService)),
+        "{:#?}",
+        r.leads
+    );
+    assert_eq!(r.leads[0].address, Some(addr(8)));
+    assert_eq!(r.leads[0].kind, LeadKind::AtRest);
+    assert!(r.labels_seen.iter().any(|l| l.address == addr(7)));
+}
+
+#[tokio::test]
+async fn whirlpool_tx0_premix_is_a_mixer_and_change_is_followed() {
+    // The scammer's coin goes into a Tx0: 6 premix outputs of 5,010,000 sats (0.05 BTC
+    // pool), an OP_RETURN, the coordinator fee and change.
+    const PREMIX: u64 = 5_010_000;
+    let coin = 6 * PREMIX + 250_000 + 2_000_000 + 1_000;
+    let pay = tx(
+        &txid(2),
+        101,
+        &[(&txid(1), 0, &addr(2), BTC)],
+        &[(&addr(3), coin), (&addr(4), BTC - coin - 1_000)],
+    );
+    let mut outs: Vec<(ct_core::Address, u64)> = (0..6).map(|i| (addr(40 + i), PREMIX)).collect();
+    outs.push((addr(50), 250_000));
+    outs.push((addr(51), 2_000_000));
+    let outs: Vec<(&ct_core::Address, u64)> = outs.iter().map(|(a, v)| (a, *v)).collect();
+    let mut tx0 = tx(&txid(3), 102, &[(&txid(2), 0, &addr(3), coin)], &outs);
+    tx0.outputs.push(ct_core::TxOutput {
+        index: tx0.outputs.len() as u32,
+        address: None,
+        value: 0,
+        script_type: ct_core::ScriptType::OpReturn,
+        script_pubkey: String::new(),
+    });
+    let p = MemoryBitcoin::new([victim_payment(), pay, tx0]);
+    let r = run(
+        &p,
+        Seed::Output {
+            txid: txid(1),
+            vout: 0,
+        },
+        forward(),
+    )
+    .await;
+    let mixer = r
+        .leads
+        .iter()
+        .find(|l| l.category == Some(EntityCategory::Mixer))
+        .expect("a Whirlpool lead");
+    assert_eq!(mixer.txid.as_deref(), Some(txid(3).as_str()));
+    assert_eq!(mixer.amount, 6 * PREMIX);
+    assert_eq!(mixer.confidence, Confidence::High);
+    assert!(mixer.title.contains("Whirlpool"), "{}", mixer.title);
+    // Change and the coordinator fee are followed as ordinary outputs (here: at rest).
+    for (a, v) in [(addr(51), 2_000_000), (addr(50), 250_000)] {
+        let l = r
+            .leads
+            .iter()
+            .find(|l| l.address == Some(a.clone()))
+            .expect("lead");
+        assert_eq!(l.kind, LeadKind::AtRest);
+        assert_eq!(l.amount, v);
+    }
+    // No service: the Tx0's 9 outputs are not a batch payout.
+    assert!(
+        r.leads
+            .iter()
+            .all(|l| l.category != Some(EntityCategory::UnknownService))
+    );
+}
+
+#[tokio::test]
+async fn oversized_share_or_minimum_is_refused() {
+    let p = MemoryBitcoin::new([victim_payment()]);
+    let seed = || Seed::Output {
+        txid: txid(1),
+        vout: 0,
+    };
+    for config in [
+        TraceConfig {
+            seed_share: Some(BTC + 1),
+            ..forward()
+        },
+        TraceConfig {
+            min_amount: Some(BTC + 1),
+            ..forward()
+        },
+    ] {
+        let e = trace_bitcoin(&p, &NoLabels, seed(), config, &mut |_| {})
+            .await
+            .unwrap_err();
+        assert!(e.to_string().contains("larger than"), "{e}");
+    }
+    assert_eq!(ct_trace::btc::default_min_amount(540), 5);
+    assert_eq!(ct_trace::btc::default_min_amount(50_000_000), 50_000);
+    assert_eq!(ct_trace::btc::default_min_amount(200_000), 1_000);
+}
+
+#[tokio::test]
+async fn whole_tx_seed_outputs_are_checked_as_endpoints() {
+    // Tracing a whole transaction: its output to a labelled exchange is an endpoint at once
+    // (hop 0), not followed into the exchange's next payout.
+    let t2 = tx(
+        &txid(2),
+        101,
+        &[(&txid(1), 0, &addr(2), BTC)],
+        &[(&addr(10), BTC / 2), (&addr(11), BTC / 2 - 1_000)],
+    );
+    let p = MemoryBitcoin::new([victim_payment(), t2]);
+    let labels = MemoryLabels::new([label(
+        10,
+        "Example Exchange",
+        EntityCategory::Exchange,
+        Confidence::High,
+    )]);
+    let r = run_with_labels(&p, &labels, Seed::Tx { txid: txid(2) }, forward()).await;
+    let ex = r
+        .leads
+        .iter()
+        .find(|l| l.address == Some(addr(10)))
+        .expect("exchange lead");
+    assert_eq!(ex.kind, LeadKind::Endpoint);
+    assert_eq!(ex.category, Some(EntityCategory::Exchange));
+    assert_eq!(ex.hops, 0);
+    assert_eq!(ex.amount, BTC / 2);
+    assert!(r.labels_seen.iter().all(|l| l.address != addr(10)));
+}
+
+#[tokio::test]
+async fn small_branches_are_listed_with_their_coins() {
+    let t2 = tx(
+        &txid(2),
+        101,
+        &[(&txid(1), 0, &addr(2), BTC)],
+        &[(&addr(3), BTC - 101_000), (&addr(4), 100_000)],
+    );
+    let p = MemoryBitcoin::new([victim_payment(), t2]);
+    let r = run(
+        &p,
+        Seed::Output {
+            txid: txid(1),
+            vout: 0,
+        },
+        TraceConfig {
+            min_amount: Some(1_000_000),
+            ..forward()
+        },
+    )
+    .await;
+    assert_eq!(r.stats.below_threshold, 100_000);
+    let b = &r.small_branches[0];
+    assert_eq!(
+        (b.txid.as_str(), b.vout, b.amount, b.hop),
+        (txid(2).as_str(), Some(1), 100_000, 1)
+    );
+    assert_eq!(b.address, Some(addr(4)));
+}
+
+#[tokio::test]
+async fn unconfirmed_funds_at_rest_are_not_a_fact() {
+    let mut t2 = tx(
+        &txid(2),
+        101,
+        &[(&txid(1), 0, &addr(2), BTC)],
+        &[(&addr(3), BTC - 1_000)],
+    );
+    t2.block = None;
+    let p = MemoryBitcoin::new([victim_payment(), t2]);
+    let r = run(
+        &p,
+        Seed::Output {
+            txid: txid(1),
+            vout: 0,
+        },
+        forward(),
+    )
+    .await;
+    let l = &r.leads[0];
+    assert_eq!(l.kind, LeadKind::AtRest);
+    assert_eq!(l.title, "Funds at rest (unconfirmed)");
+    assert_eq!(l.confidence, Confidence::Medium);
+    assert!(matches!(l.claim, Claim::Inference { .. }));
+}
+
+#[tokio::test]
 async fn deposit_consolidation_is_a_service_endpoint() {
     let t2 = tx(
         &txid(2),

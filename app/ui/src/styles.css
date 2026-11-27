@@ -1305,3 +1305,15 @@ table.ledger a:hover,
   min-width: 0;
   max-width: 100%;
 }
+
+.small-branches {
+  margin-top: 6px;
+}
+.small-branches summary {
+  cursor: pointer;
+  color: var(--muted);
+}
+.small-branches ul {
+  max-height: 220px;
+  overflow: auto;
+}

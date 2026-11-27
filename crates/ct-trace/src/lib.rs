@@ -15,6 +15,6 @@ pub use btc::{Seed, trace_bitcoin};
 pub use graph::{GraphEdge, GraphNode, GraphView, NodeKind};
 pub use labels::{LabelLookup, MemoryLabels, NoLabels};
 pub use report::{
-    Direction, Flow, FlowRole, LabelSeen, Lead, LeadKind, Progress, SeedOutput, StopReason,
-    TraceConfig, TraceReport, TraceStats,
+    Direction, Flow, FlowRole, LabelSeen, Lead, LeadKind, Progress, SMALL_BRANCHES_LISTED,
+    SeedOutput, SmallBranch, StopReason, TraceConfig, TraceReport, TraceStats,
 };

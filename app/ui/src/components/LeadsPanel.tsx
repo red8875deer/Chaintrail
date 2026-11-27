@@ -4,6 +4,7 @@ import { type KeyboardEvent, useEffect, useState } from "react";
 import type { Lead, TraceView } from "../api/types";
 import { formatBtc, formatShare, formatUtcDate, shareBasisPoints, shortId } from "../lib/format";
 import { categoryName, leadKindName } from "../lib/meaning";
+import { href } from "../lib/route";
 import { Basis, Btc, Meter, categoryColor } from "./bits";
 
 function LeadRow({
@@ -201,6 +202,7 @@ function Exposure({
           </li>
         ))}
       </ul>
+      <SmallBranches view={view} />
       {onLowerMinimum && Number(shareBasisPoints(view.report.stats.below_threshold, total)) >= SMALL_BRANCHES_WARN_BP && (
         <p className="callout small">
           {formatShare(view.report.stats.below_threshold, total)} of the traced amount went into branches smaller than{" "}
@@ -211,6 +213,50 @@ function Exposure({
         </p>
       )}
     </section>
+  );
+}
+
+/** The largest branches under the minimum, each with a link to trace it on its own. */
+function SmallBranches({ view }: { view: TraceView }) {
+  const r = view.report;
+  const list = (r.small_branches ?? []).filter((b) => b.vout !== null);
+  if (list.length === 0) return null;
+  const listed = list.reduce((s, b) => s + b.amount, 0);
+  return (
+    <details className="small-branches">
+      <summary className="small">
+        {listed < r.stats.below_threshold
+          ? `The ${list.length} largest small branches (${formatShare(listed, r.stats.below_threshold)} of their amount)`
+          : `Small branches (${list.length})`}
+      </summary>
+      <ul className="evidence">
+        {list.map((b) => (
+          <li key={`${b.txid}:${b.vout}`}>
+            <Btc sats={b.amount} />{" "}
+            <span className="muted small">
+              {b.address ? shortId(b.address.value) : `${shortId(b.txid)}:${b.vout}`} · hop {b.hop}
+            </span>{" "}
+            <a
+              className="small"
+              href={href({
+                page: "trace",
+                params: {
+                  txid: b.txid,
+                  vout: b.vout!,
+                  direction: r.direction,
+                  share: b.amount,
+                  mixed: b.mixed_in ?? undefined,
+                  from: r.seed,
+                  run: true,
+                },
+              })}
+            >
+              Trace
+            </a>
+          </li>
+        ))}
+      </ul>
+    </details>
   );
 }
 

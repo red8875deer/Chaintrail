@@ -32,10 +32,13 @@ pub fn service_from_summary(s: &AddressSummary) -> Option<ServiceHint> {
     Some(ServiceHint {
         category: EntityCategory::UnknownService,
         confidence,
-        evidence: vec![format!(
-            "address has {} transactions and has spent {} outputs (busy wallet)",
-            s.tx_count, s.spent_outputs
-        )],
+        evidence: vec![
+            format!(
+                "address has {} transactions and has spent {} outputs (busy wallet)",
+                s.tx_count, s.spent_outputs
+            ),
+            "counted over the address's whole history to date, not only up to this transfer".into(),
+        ],
     })
 }
 

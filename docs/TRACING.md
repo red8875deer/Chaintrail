@@ -50,13 +50,17 @@ confidence and the evidence.
 
 - Branches are followed **largest amount first**, so a limited budget goes to the biggest
   flows. Limits: `--max-hops` (default 8), `--max-txs` (default 100), and a minimum branch
-  size (default 0.1% of the traced amount, at least 1,000 sats).
+  size (default 0.1% of the traced amount, at least 1,000 sats; for traces under
+  100,000 sats the floor is 1% of the amount). A minimum larger than the traced amount, or a
+  continuation share larger than the start, is refused rather than clipped.
 - The **seed address is never treated as an endpoint**: you chose to trace from it, even if
   it is busy or labelled (scam collection addresses often are), and forward its sweep
   together with many other addresses is not a service stop either (a scammer gathering
   victims' payments looks the same; the note on the edge says both readings). Its label,
   if any, is listed. Backward, a start transaction that is a service payout does stop: that
   is where the funds came from; a consolidation at the start does not (its inputs are).
+  Tracing forward from a **whole transaction**, its outputs are where the funds went: each is
+  checked like any other address (an output to a labelled exchange is an endpoint at hop 0).
 - **Hops** are counted the same way in both directions: a lead is at most `max-hops`
   transactions away from the seed. Each coin keeps the shortest route by which the funds
   reached it, and its hop count and path always agree. Branches are followed largest
@@ -74,6 +78,10 @@ confidence and the evidence.
 - Leads that stop because of limits or data errors are reported as **not followed**,
   separately from real endpoints. They and funds at rest are one lead per coin
   (`txid:vout`), so each can be continued, or frozen, exactly.
+- Branches under the minimum are counted as "small branches"; the 50 largest are listed with
+  their coin (`small_branches`), so they can be traced on their own.
+- Funds at rest in an **unconfirmed** transaction are an inference (Medium), not a fact: the
+  transaction can still be replaced or dropped.
 
 ### Labels during a trace
 
@@ -81,6 +89,9 @@ confidence and the evidence.
   individuals or perpetrators) and its confidence is at least the stop level (Medium by
   default).
   Weaker labels are listed as "labelled addresses passed through" and tracing continues.
+- An address labelled as a perpetrator or an individual is **followed through** whatever its
+  activity: the busy-wallet check is not applied to it (the 2020 Twitter-hack scam address
+  collected hundreds of victim payments and later dust, so it looks "busy").
 - A service detected by **transaction shape** (deposit consolidation, batch payout) is
   **named** from labels on addresses of the same wallet: any labelled input of the
   transaction (common-input ownership), or, for consolidations, the address that received
@@ -124,7 +135,15 @@ Reference: Kappos et al., *How to Peel a Million*, USENIX Security 2022.
 |---|---|---|
 | Whirlpool-style | 5–8 inputs, same number of outputs, all outputs equal | High |
 | WabiSabi (Wasabi 2.x) | ≥ 50 inputs and outputs, ≥ 50% of outputs are standard denominations (2ⁿ, 3ⁿ, 2·3ⁿ, 10ⁿ, 2·10ⁿ, 5·10ⁿ sats ≥ 5,000) | High |
-| Generic (JoinMarket etc.) | ≥ 3 equal outputs, at least as many inputs, inputs from 2+ addresses, ≤ one change per participant | Medium (High with ≥ 5 equal) |
+| Generic (JoinMarket, Wasabi 1.x etc.) | ≥ 3 equal outputs, at least as many inputs but at most 6 per equal output, inputs from 2+ addresses, ≤ one change per mixed output (outputs at any repeated value count as mixed: Wasabi 1.x pays several levels v, ~2v, ~4v…) | Medium (High with ≥ 5 equal) |
+| Chip split (ChipMixer-style) | ≥ 5 outputs of one value 2ᵏ × 0.001 BTC, nothing else but at most one small remainder, inputs from 2+ addresses | Medium |
+
+A **Whirlpool Tx0** (one wallet preparing coins: ≥ 2 equal "premix" outputs at a pool
+amount — 0.001, 0.01, 0.05 or 0.5 BTC — plus at most 5% for fees, an OP_RETURN, and at most
+3 other outputs for the coordinator fee and change) is not a CoinJoin and not a batch
+payout. Forward, its premix outputs become one mixer lead "Likely entering Whirlpool"
+(High); its change and fee outputs are followed as usual. Backward it is an ordinary
+transaction (one owner).
 
 In every kind, the equal outputs must go to separate addresses (at least 90% distinct):
 equal outputs paid to one address are one owner splitting or consolidating funds (seen in
@@ -139,6 +158,10 @@ high-confidence link.
 | Consolidation: ≤ 2 recipients (distinct output addresses), many distinct input addresses | ≥ 20 | ≥ 50 | — |
 | Batch payout: many distinct output addresses, fewer inputs | ≥ 20 | ≥ 50 | ≥ 100 |
 | Busy address: transactions and spent outputs | — | ≥ 1,000 and ≥ 100 | ≥ 10,000 and ≥ 1,000 |
+
+The busy-address counts are the address's whole history to date (the free API gives no
+counts as of a date); the evidence says so. An address that became busy only after the
+traced transfer can therefore be over-reported: check the dates for older cases.
 
 **Dormancy rule:** before a consolidation is treated as a service, the five largest inputs
 are checked. If most had been unspent for more than 90 days, it is an owner consolidating
