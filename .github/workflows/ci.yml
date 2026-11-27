@@ -54,6 +54,11 @@ jobs:
           npm run licences
           npm test
           npm run build
+      - name: Trace graph browser checks (recorded traces, no network)
+        working-directory: app/ui
+        run: |
+          npx playwright install --with-deps chromium
+          npm run e2e
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy

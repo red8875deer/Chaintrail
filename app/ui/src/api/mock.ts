@@ -32,8 +32,19 @@ export async function mockCall<K extends keyof Commands>(
       return address;
     case "btc_tx":
       return (req as { txid: string }).txid.startsWith("272e8b2d") ? txCoinjoin : txPayment;
-    case "btc_trace":
-      return (req as { direction: string }).direction === "backward" ? traceBackward : traceForward;
+    case "btc_trace": {
+      // Larger recorded traces, loaded only when asked for (demos and browser tests).
+      const r = req as { txid: string; direction: string };
+      const big: Record<string, () => Promise<{ default: unknown }>> = {
+        f4184fc5: () => import("../../fixtures/btc_trace_large.json"),
+        "3f036ff8": () => import("../../fixtures/btc_trace_fanin.json"),
+        a82d6098: () => import("../../fixtures/btc_trace_chain.json"),
+        "628fb3f0": () => import("../../fixtures/btc_trace_alloutputs.json"),
+      };
+      const load = big[r.txid.slice(0, 8)];
+      if (load) return (await load()).default;
+      return r.direction === "backward" ? traceBackward : traceForward;
+    }
     case "label_lookup":
       return labelLookup;
     case "label_packs":

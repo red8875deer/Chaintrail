@@ -46,6 +46,7 @@ cargo run -p ct-cli -- labels lookup <addr> | labels packs | labels add ... | la
 # regenerate GraphSense packs: python3 tools/import_graphsense.py <graphsense-tagpacks checkout> data/labels
 cargo run -p ct-cli -- serve --port 7979 --token devtoken   # API + built UI for browser testing
 (cd app/ui && npm ci && npm run licences && npm test && npm run build)
+(cd app/ui && npm run e2e)            # graph browser checks on recorded traces (after build)
 (cd app/ui && npm run dev)            # http://localhost:5173/#token=devtoken (proxies /api to 7979)
 http://localhost:5173/?mock=1         # UI on recorded fixtures, no network
 cargo clippy --manifest-path app/src-tauri/Cargo.toml -- -D warnings
