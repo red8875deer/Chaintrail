@@ -51,6 +51,11 @@ Dates are not committed; quality is.
 - [x] Readable large graphs: small flows hidden (adaptive, with notice), branches grouped, chains collapsed, parallel transfers combined, mid-edge arrows, stable layout, readable opening zoom (ADR-0011)
 - [x] All-outputs traces start from the traced transaction (exact amount to each output)
 - [x] Funds followed through outputs without an address (P2PK): flows record their coins (`from_coin`, `to_coin`)
+- [x] Independent audits of the trace part (correctness vs mempool.space, graph, investigator workflow, QA/accessibility) and fixes: perpetrator labels followed, CoinJoin/consolidation rules, backward per-output allocation, per-coin "not followed" leads, symmetric hops, amounts after mixing marked as pro-rata allocations
+- [x] Continue a trace with the share it traced (not the whole output); request-ready endpoint details; result summary by category; history/back/reload
+- [x] Exports carry provenance (time, app version, data source, label data, settings, path per lead); PNG with header; CSV safe against formulas
+- [x] Keyboard use of the graph and leads; contrast; narrow screens; graph browser checks in CI (`npm run e2e`)
+- [ ] Layout of very large graphs (1,500+ addresses) off the main thread (now about 1–2 s per re-layout)
 - [x] Exports: report JSON, leads CSV, graph PNG
 - [x] Mock mode with recorded data; UI unit tests; browser checks with Playwright
 - [x] Release workflow for Windows / macOS / Linux installers (unsigned for now)

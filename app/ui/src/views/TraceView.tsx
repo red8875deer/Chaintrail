@@ -471,7 +471,10 @@ export function TraceView({ params }: { params: TraceParams | null }) {
                     className="btn"
                     onClick={() => {
                       const png = controls.current?.png() ?? "";
-                      if (!exportPng(view, png)) window.alert("There is no graph to save at the current setting.");
+                      const note = display
+                        ? `Drawn: ${display.shown} of ${display.total} addresses${display.hidden > 0 ? `; ${display.hidden} with flows under ${(hideBp / 100).toFixed(hideBp % 100 ? 1 : 0)}% of the traced amount hidden` : ""}${display.groups.size > 0 ? "; smaller branches grouped and runs of addresses collapsed" : ""}. Every lead is in the CSV and JSON exports.`
+                        : "";
+                      if (!exportPng(view, png, note)) window.alert("There is no graph to save at the current setting.");
                     }}
                   >
                     Save graph (PNG)
