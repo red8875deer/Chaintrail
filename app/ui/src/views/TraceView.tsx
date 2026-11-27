@@ -9,7 +9,7 @@ import { type GraphControls, GraphCanvas, type Selection } from "../components/G
 import { LeadsPanel } from "../components/LeadsPanel";
 import { Legend } from "../components/Legend";
 import { exportCsv, exportJson, exportPng } from "../lib/export";
-import { formatElapsed, formatInt, parseBtc } from "../lib/format";
+import { extractId, formatElapsed, formatInt, parseBtc } from "../lib/format";
 import { buildDisplay, defaultMinShareBp, displayPath, isGroupId, leadPath, leadSpine, nodeForLead } from "../lib/graph";
 import { DEFAULT_MAX_HOPS, DEFAULT_MAX_TXS, type TraceParams, href, parseRoute, sameTrace } from "../lib/route";
 
@@ -47,20 +47,33 @@ function fromParams(p: TraceParams | null): FormState {
 }
 
 function toRequest(f: FormState): TraceRequest | string {
-  const txid = f.txid.trim();
+  // Explorer links are accepted: the transaction id is taken from them.
+  const txid = extractId(f.txid);
   if (!/^[0-9a-fA-F]{64}$/.test(txid)) return "Enter a transaction id: 64 characters, 0–9 and a–f.";
   if (f.vout.trim() && f.to.trim()) return "Fill in either the output number or the recipient address, not both.";
   if (f.vout.trim() && !/^\d+$/.test(f.vout.trim())) return "The output number must be a whole number (0, 1, 2…).";
+  if (f.vout.trim() && Number(f.vout.trim()) > 4_294_967_295) return "That output number is too large.";
   const min = f.minBtc.trim() ? parseBtc(f.minBtc) : null;
-  if (f.minBtc.trim() && min === null) return "The minimum must be an amount in BTC, e.g. 0.01.";
-  const int = (s: string, d: number) => (/^\d+$/.test(s.trim()) ? Number(s.trim()) : d);
+  if (f.minBtc.trim() && min === null) return "The minimum must be an amount in BTC, e.g. 0.01 (or 0,01).";
+  if (min !== null && min > 21_000_000n * 100_000_000n) return "The minimum is larger than all bitcoin in existence.";
+  // Limits are checked, never changed silently.
+  const limit = (s: string, name: string, max: number, d: number): number | string => {
+    if (!s.trim()) return d;
+    if (!/^\d+$/.test(s.trim())) return `${name} must be a whole number.`;
+    const n = Number(s.trim());
+    return n < 1 || n > max ? `${name} must be between 1 and ${max}.` : n;
+  };
+  const hops = limit(f.maxHops, "Max hops", 100, DEFAULT_MAX_HOPS);
+  if (typeof hops === "string") return hops;
+  const txs = limit(f.maxTxs, "Max transactions", 5000, DEFAULT_MAX_TXS);
+  if (typeof txs === "string") return txs;
   return {
     txid,
     vout: f.vout.trim() ? Number(f.vout.trim()) : null,
     to: f.to.trim() || null,
     direction: f.direction,
-    max_hops: int(f.maxHops, DEFAULT_MAX_HOPS),
-    max_txs: int(f.maxTxs, DEFAULT_MAX_TXS),
+    max_hops: hops,
+    max_txs: txs,
     min_sats: min !== null ? Number(min) : null,
     check_addresses: f.checkAddresses,
     share_sats: f.share ?? null,
@@ -119,6 +132,8 @@ export function TraceView({ params }: { params: TraceParams | null }) {
     const id = ++runId.current;
     setRunning(true);
     setError(null);
+    // Old results never stay on screen under a new request (it may fail).
+    setView(null);
     setProgress(null);
     setSelectedLead(null);
     setSelection(null);
@@ -147,7 +162,15 @@ export function TraceView({ params }: { params: TraceParams | null }) {
   useEffect(() => {
     const f = fromParams(params);
     setForm(f);
-    if (params?.run) void run(f);
+    if (params?.run) {
+      void run(f);
+    } else if (!params) {
+      // A fresh trace page: drop the previous result and any trace still running.
+      runId.current += 1;
+      setRunning(false);
+      setView(null);
+      setError(null);
+    }
   }, [params, run]);
 
   useEffect(() => {

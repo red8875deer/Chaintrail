@@ -246,10 +246,17 @@ export function LeadsPanel({
             </button>
           </p>
         )}
-        {found.length === 0 && filter === null && (
+        {found.length === 0 && filter === null && open.length > 0 && (
           <p className="muted small">
-            No endpoint was reached within the limits. Raise the hop or transaction limits, or trace one of
-            the branches below on its own.
+            No endpoint was reached within the limits. Raise the hop or transaction limits, or continue one of
+            the branches below.
+          </p>
+        )}
+        {r.leads.length === 0 && (
+          <p className="muted small">
+            Nothing to follow: all of the traced amount went to fees or to branches smaller than the minimum
+            of <Btc sats={r.min_amount} /> (see the accounting below). Lower the minimum under "Limits and options"
+            to follow small amounts.
           </p>
         )}
         <ul className="leads" role="listbox" aria-label="Leads">

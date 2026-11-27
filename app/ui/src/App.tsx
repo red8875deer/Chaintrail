@@ -2,7 +2,7 @@ import { type FormEvent, useEffect, useState } from "react";
 import { call } from "./api/client";
 import type { StatusView } from "./api/types";
 import { ErrorBox } from "./components/bits";
-import { formatInt } from "./lib/format";
+import { extractId, formatInt } from "./lib/format";
 import { go, href, useRoute } from "./lib/route";
 import { AddressView } from "./views/AddressView";
 import { Home } from "./views/Home";
@@ -38,7 +38,8 @@ export function App() {
 
   const search = async (e: FormEvent) => {
     e.preventDefault();
-    const q = query.trim();
+    // Explorer links are accepted: the transaction id or address is taken from them.
+    const q = extractId(query);
     if (!q) return;
     setSearchError(null);
     try {

@@ -35,3 +35,27 @@ describe("BTC formatting (integer maths only)", () => {
     expect(csvCell('a "b", c')).toBe('"a ""b"", c"');
   });
 });
+
+describe("parseBtc with commas", () => {
+  it("reads a decimal comma and thousands separators, and rejects ambiguous input", async () => {
+    const { parseBtc } = await import("./format");
+    expect(parseBtc("0,5")).toBe(50_000_000n);
+    expect(parseBtc("1,000")).toBe(100_000_000_000n);
+    expect(parseBtc("1,000.5")).toBe(100_050_000_000n);
+    expect(parseBtc("0,500,1")).toBeNull();
+    expect(parseBtc("1,0.5")).toBeNull();
+  });
+});
+
+describe("extractId", () => {
+  it("finds a txid or address in an explorer link", async () => {
+    const { extractId } = await import("./format");
+    const t = "fc78327d4e46dac01dc313067b1ac7f274cdb3a07ea9f28f6f71473145f1b264";
+    expect(extractId(`https://mempool.space/tx/${t}#vout=1`)).toBe(t);
+    expect(extractId(`  ${t} `)).toBe(t);
+    expect(extractId("https://mempool.space/address/bc1qnhx6u3af9qyyy5rrtfldlhjxuayp4axscqqf3r")).toBe(
+      "bc1qnhx6u3af9qyyy5rrtfldlhjxuayp4axscqqf3r",
+    );
+    expect(extractId("1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa")).toBe("1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa");
+  });
+});

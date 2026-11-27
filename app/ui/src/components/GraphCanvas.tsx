@@ -267,12 +267,16 @@ function placeNear(cy: Core, added: cytoscape.NodeCollection) {
   }
 }
 
+/** Re-enables Cytoscape's warnings after the last glide (glides can overlap). */
+let warningsTimer: ReturnType<typeof setTimeout> | undefined;
+
 /** Move nodes from `from` to where they are now, smoothly (or not at all if reduced motion). */
 function glide(cy: Core, from: Map<string, Position>) {
   if (reducedMotion()) return;
   // While nodes pass each other, Cytoscape warns about edges it cannot draw for a frame.
   cytoscape.warnings(false);
-  setTimeout(() => cytoscape.warnings(true), MOVE_MS + 100);
+  clearTimeout(warningsTimer);
+  warningsTimer = setTimeout(() => cytoscape.warnings(true), MOVE_MS + 150);
   cy.nodes().forEach((n) => {
     const to = { ...n.position() };
     const start = from.get(n.id());

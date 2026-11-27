@@ -61,7 +61,14 @@ export function formatBtcSigned(value: number | bigint | string): string {
  * Returns null if it is not a non-negative number with at most 8 decimals.
  */
 export function parseBtc(input: string): bigint | null {
-  const s = input.trim().replace(/,/g, "").replace(/\s/g, "");
+  let s = input.trim().replace(/\s/g, "");
+  // Commas: thousands separators ("1,000.5", "12,345") or a decimal comma ("0,5").
+  // Anything else with a comma is ambiguous and rejected rather than guessed.
+  if (s.includes(",")) {
+    if (/^[1-9]\d{0,2}(,\d{3})+(\.\d*)?$/.test(s)) s = s.replace(/,/g, "");
+    else if (!s.includes(".") && /^\d+,\d{1,8}$/.test(s)) s = s.replace(",", ".");
+    else return null;
+  }
   const m = /^(\d*)(?:\.(\d{0,8}))?$/.exec(s);
   if (!m || (m[1] === "" && (m[2] ?? "") === "")) return null;
   const whole = BigInt(m[1] || "0");
@@ -153,4 +160,15 @@ export function formatBtcShort(value: number | bigint | string): string {
   let frac = (rounded % SATS_PER_BTC).toString().padStart(8, "0").slice(0, decimals);
   if (decimals === 8) frac = frac.replace(/0+$/, "");
   return `${sign}${whole}${frac ? "." + frac : ""}`;
+}
+
+/** A transaction id or address inside pasted text, e.g. an explorer link
+ * ("https://mempool.space/tx/<txid>", ".../address/<addr>"). Plain ids pass through. */
+export function extractId(input: string): string {
+  const s = input.trim();
+  const tx = /(?:^|[^0-9a-fA-F])([0-9a-fA-F]{64})(?:$|[^0-9a-fA-F])/.exec(s);
+  if (tx) return tx[1]!;
+  const addr = /\/address\/([A-Za-z0-9]{25,90})/.exec(s);
+  if (addr) return addr[1]!;
+  return s;
 }
