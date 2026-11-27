@@ -1077,3 +1077,49 @@ async fn graph_follows_funds_through_an_output_without_an_address() {
         1
     );
 }
+
+#[tokio::test]
+async fn small_test_payment_to_an_endpoint_counts_toward_it() {
+    // The scammer first sends a 20,000-sat test payment to the exchange, then the rest.
+    let t2 = tx(
+        &txid(2),
+        101,
+        &[(&txid(1), 0, &addr(2), BTC)],
+        &[(&addr(10), 20_000), (&addr(3), BTC - 30_000)],
+    );
+    let t3 = tx(
+        &txid(3),
+        102,
+        &[(&txid(2), 1, &addr(3), BTC - 30_000)],
+        &[(&addr(10), BTC - 40_000)],
+    );
+    let p = MemoryBitcoin::new([victim_payment(), t2, t3]);
+    let labels = MemoryLabels::new([label(
+        10,
+        "Example Exchange",
+        EntityCategory::Exchange,
+        Confidence::High,
+    )]);
+    let r = run_with_labels(
+        &p,
+        &labels,
+        Seed::Payment {
+            txid: txid(1),
+            address: addr(2),
+        },
+        TraceConfig {
+            min_amount: Some(100_000),
+            ..Default::default()
+        },
+    )
+    .await;
+    let ex: Vec<_> = r
+        .leads
+        .iter()
+        .filter(|l| l.address == Some(addr(10)))
+        .collect();
+    assert_eq!(ex.len(), 1, "{:#?}", r.leads);
+    assert_eq!(ex[0].kind, LeadKind::Endpoint);
+    assert_eq!(ex[0].amount, 20_000 + BTC - 40_000);
+    assert_eq!(r.stats.below_threshold, 0);
+}

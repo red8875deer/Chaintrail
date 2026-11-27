@@ -295,6 +295,31 @@ impl<'a> Tracer<'a> {
     }
 
     /// Endpoint check for an address: labels first, then behaviour.
+    /// `endpoint_for` from what is already known (labels, address checks made earlier in
+    /// this trace), without network requests.
+    fn known_endpoint(&self, address: &Address) -> Option<(String, EntityCategory, Claim)> {
+        if let Some(label) = self.labels.lookup(address)
+            && self.stops_at(&label)
+        {
+            return Some((label_title(&label), label.category, label.claim));
+        }
+        let hint = self
+            .summaries
+            .get(address)?
+            .as_ref()
+            .and_then(service_from_summary)
+            .filter(|h| h.confidence >= self.config.stop_confidence)?;
+        Some((
+            "Likely service (busy wallet)".into(),
+            hint.category,
+            Claim::Inference {
+                heuristic: "service.busy_address".into(),
+                confidence: hint.confidence,
+                evidence: hint.evidence,
+            },
+        ))
+    }
+
     async fn endpoint_for(&mut self, address: &Address) -> Option<(String, EntityCategory, Claim)> {
         if let Some(label) = self.labels.lookup(address) {
             if self.stops_at(&label) {
@@ -580,6 +605,27 @@ impl<'a> Tracer<'a> {
                 leads: self.leads.len(),
             });
             if coin.amount < min_amount {
+                // A small amount reaching an address already known as an endpoint still
+                // belongs to it (e.g. a test payment before the main deposit). Only what is
+                // already known is used: no extra lookups for small amounts.
+                if coin.hop > 0
+                    && let Some(addr) = coin.address.clone()
+                    && let Some((title, category, claim)) = self.known_endpoint(&addr)
+                {
+                    self.add_lead(
+                        LeadKind::Endpoint,
+                        title,
+                        Some(category),
+                        Some(addr),
+                        Some(coin.txid.clone()),
+                        coin.amount,
+                        coin.time,
+                        coin.hop,
+                        claim,
+                        &coin.path,
+                    );
+                    continue;
+                }
                 self.stats.below_threshold += coin.amount;
                 continue;
             }

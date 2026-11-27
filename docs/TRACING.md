@@ -18,7 +18,10 @@ It produces:
 2. **Funds at rest:** amounts still sitting in unidentified wallets (possible freeze or
    watch targets).
 3. **Dead ends with reasons:** e.g. "entered Monero via swap service", "hop limit reached",
-   "below value threshold".
+   "below value threshold". An amount below the threshold that reaches an address already
+   known as an endpoint in the same trace (a label, or an address check already made) still
+   counts toward that endpoint, e.g. a small test payment before the main deposit. No extra
+   lookups are made for small amounts.
 4. **The graph:** every hop, for visual review.
 
 ## 2. Endpoints (where tracing stops)
