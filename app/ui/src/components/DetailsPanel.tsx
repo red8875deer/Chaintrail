@@ -432,13 +432,32 @@ function NodeDetails({
           {node.confidence && <Meter confidence={node.confidence} />}
         </div>
       )}
+      {/* Actions first: the card scrolls, and these are what an investigator does next. */}
+      <div className="actions">
+        {next && (
+          <a className="btn" href={href({ page: "trace", params: next.params })} title={next.caution}>
+            {next.label}
+          </a>
+        )}
+        {node.address && (
+          <a className="btn" href={href({ page: "address", address: node.address })}>
+            Open address
+          </a>
+        )}
+        {node.address && (
+          <a className="btn subtle" href={href({ page: "labels", address: node.address })}>
+            Labels
+          </a>
+        )}
+      </div>
+      {next?.caution && <p className="small muted">{next.caution}</p>}
       {lead && (
         <div style={{ display: "grid", gap: 6 }}>
           <p>
             <strong>{leadKindName(lead.kind)}:</strong> <Btc sats={lead.amount} />{" "}
             <span className="muted small">{formatShare(lead.amount, r.seed_amount)}</span>
           </p>
-          <p className="small muted">{leadKindExplanation(lead.kind, lead.category)}</p>
+          <p className="small muted">{leadKindExplanation(lead.kind, lead.category, r.direction)}</p>
           {lead.category && <p className="small">Category: {categoryName(lead.category)}</p>}
           <ClaimExplained claim={lead.claim} />
           <p className="small muted">
@@ -483,24 +502,6 @@ function NodeDetails({
           </dd>
         </div>
       </dl>
-      {next?.caution && <p className="small muted">{next.caution}</p>}
-      <div className="actions">
-        {node.address && (
-          <a className="btn" href={href({ page: "address", address: node.address })}>
-            Open address
-          </a>
-        )}
-        {next && (
-          <a className="btn" href={href({ page: "trace", params: next.params })} title={next.caution}>
-            {next.label}
-          </a>
-        )}
-        {node.address && (
-          <a className="btn subtle" href={href({ page: "labels", address: node.address })}>
-            Labels
-          </a>
-        )}
-      </div>
     </section>
   );
 }

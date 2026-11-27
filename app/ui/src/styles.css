@@ -617,6 +617,8 @@ table.ledger tr.clickable:hover td {
 .canvas-wrap {
   position: relative;
   min-height: 0;
+  display: flex;
+  flex-direction: column;
   background-color: var(--paper);
   background-image: radial-gradient(var(--rule) 1px, transparent 1px);
   background-size: 22px 22px;
@@ -627,18 +629,22 @@ table.ledger tr.clickable:hover td {
   inset: 0;
 }
 
+/* The graph itself; the notice above and the tools below are strips, never over it. */
+.canvas-stage {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+}
+
 .canvas-tools {
-  position: absolute;
-  right: 12px;
-  bottom: 12px;
   display: flex;
-  gap: 6px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px 10px;
   align-items: center;
-  padding: 6px;
+  padding: 6px 12px;
   background: var(--surface);
-  border: 1px solid var(--rule);
-  border-radius: var(--radius-m);
-  box-shadow: var(--shadow);
+  border-top: 1px solid var(--rule);
 }
 
 .canvas-tools label {
@@ -1027,19 +1033,14 @@ table.ledger a:hover,
 
 /* What the graph is showing, when it is not everything. */
 .view-note {
-  position: absolute;
-  left: 12px;
-  top: 12px;
-  max-width: min(520px, calc(100% - 24px));
+  flex: none;
   display: flex;
   align-items: flex-start;
   gap: 8px;
-  padding: 6px 6px 6px 12px;
+  padding: 5px 6px 5px 12px;
   background: var(--surface);
-  border: 1px solid var(--rule);
+  border-bottom: 1px solid var(--rule);
   border-left: 3px solid var(--trail);
-  border-radius: var(--radius-s);
-  box-shadow: var(--shadow);
   font-size: 0.82rem;
   color: var(--muted);
 }
@@ -1305,6 +1306,14 @@ table.ledger a:hover,
   min-width: 0;
   max-width: 100%;
 }
+/* The sticky card spans the whole column (its negative margins), so the list never shows
+   along its edge. */
+@media (min-width: 901px) {
+  .details-anchor:has(> .details) {
+    max-width: none;
+    width: calc(100% + 36px);
+  }
+}
 
 .small-branches {
   margin-top: 6px;
@@ -1316,4 +1325,14 @@ table.ledger a:hover,
 .small-branches ul {
   max-height: 220px;
   overflow: auto;
+}
+
+.passed-through {
+  margin-top: 8px;
+}
+.passed-through > p {
+  margin: 0 0 2px;
+}
+.exposure-row.static {
+  cursor: default;
 }

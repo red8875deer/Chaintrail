@@ -353,6 +353,8 @@ export function buildDisplay(view: TraceView, o: DisplayOptions): Display {
 
   // 4. Emit nodes.
   const elements: ElementDefinition[] = [];
+  /** Traced amount moving on from each drawn node (forward: out of it; backward: into it). */
+  const onward = new Map<string, number>();
   let shown = 0;
   for (const id of visible) {
     if (nodeOf.has(id)) continue;
@@ -363,6 +365,7 @@ export function buildDisplay(view: TraceView, o: DisplayOptions): Display {
     // The traced transaction (all-outputs traces) stands for the whole traced amount,
     // including outputs too small to follow.
     const amount = n.seed && n.kind === "transaction" ? seedAmount : nodeAmount(n);
+    if (!(n.seed && n.kind === "transaction")) onward.set(id, fwd ? n.amount_out : n.amount_in);
     shown++;
     elements.push({
       group: "nodes",
@@ -379,6 +382,7 @@ export function buildDisplay(view: TraceView, o: DisplayOptions): Display {
     });
   }
   for (const g of groups.values()) {
+    if (g.kind === "chain") onward.set(g.id, g.amount);
     const label =
       g.kind === "chain"
         ? `${g.members.length} addresses in a row`
@@ -498,6 +502,22 @@ export function buildDisplay(view: TraceView, o: DisplayOptions): Display {
         .join(" "),
     });
   }
+  // Funds moving on from a node by flows not drawn (hidden by the slider): say how much on
+  // the node, so value never silently disappears from the drawing.
+  const drawn = new Map<string, number>();
+  for (const m of merged.values()) {
+    if (m.source === m.target) continue;
+    const at = fwd ? m.source : m.target;
+    drawn.set(at, (drawn.get(at) ?? 0) + m.amount);
+  }
+  const notable = Math.max(1, Math.floor(seedAmount / 200));
+  for (const el of elements) {
+    if (el.group !== "nodes") continue;
+    const id = String(el.data.id);
+    const hidden = (onward.get(id) ?? 0) - (drawn.get(id) ?? 0);
+    if (hidden >= notable) el.data.label = `${el.data.label}\n+${formatBtcShort(hidden)} BTC hidden`;
+  }
+
   // Edges inside a chain highlight as the chain's incoming edge.
   for (const e of edges) {
     if (edgeOf.has(e.id)) continue;
@@ -582,6 +602,18 @@ export function graphStyle(p: Palette): StylesheetJsonBlock[] {
     // Inferred identifications get a dashed outline; facts and labels a solid one.
     { selector: "node.lead", style: { "border-width": 3, "border-color": p.ink } },
     { selector: "node.inference", style: { "border-style": "dashed" } },
+    // Named from a third-party label: an outer ring, so a name on the graph is never read as
+    // an on-chain fact (the details give the source).
+    {
+      selector: "node.attribution",
+      style: {
+        "outline-width": 2,
+        "outline-style": "solid",
+        "outline-color": p.ink,
+        "outline-offset": 3,
+        "outline-opacity": 0.7,
+      } as never,
+    },
     {
       selector: "node.at_rest",
       style: { "border-style": "double", "border-width": 5, "border-color": p.nodes.at_rest, "background-opacity": 0.35 },
@@ -663,6 +695,7 @@ export function graphStyle(p: Palette): StylesheetJsonBlock[] {
       style: { label: "", "target-label": "data(label)", "target-text-offset": "data(stubOffset)" as never, "target-text-rotation": "none" },
     },
     { selector: "edge.change", style: { "line-style": "dashed", "line-dash-pattern": [7, 4] } },
+    { selector: "edge.flat", style: { "text-rotation": "none" } },
     // Self-transfers loop over the top: arrows arrive from the left, labels sit below.
     { selector: "edge.loop", style: { label: "", "loop-direction": "0deg", "loop-sweep": "-50deg", "text-margin-y": -14 } },
     { selector: "edge.loop.hover, edge.loop:selected", style: { label: "data(label)" } },

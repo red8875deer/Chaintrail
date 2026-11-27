@@ -9,7 +9,7 @@
 import { type KeyboardEvent, type RefObject, useEffect, useRef, useState } from "react";
 import cytoscape, { type Core, type EdgeSingular, type Position } from "cytoscape";
 import dagre from "cytoscape-dagre";
-import { type Display, type Palette, graphStyle, labelWidth } from "../lib/graph";
+import { type Display, type Palette, graphStyle, isGroupId, labelWidth } from "../lib/graph";
 import type { NodeStyleKey } from "../lib/meaning";
 import { NODE_STYLES } from "../lib/meaning";
 
@@ -30,8 +30,12 @@ const MIN_READABLE_ZOOM = 0.8;
 /** Small graphs are not blown up: more context, steadier text size between traces. */
 const MAX_FIT_ZOOM = 1.15;
 /** Room around the graph; more at the top (notice) and bottom (toolbar, legend). */
-const PAD = { top: 104, bottom: 96, left: 48, right: 48 };
+const PAD = { top: 28, bottom: 60, left: 48, right: 48 };
 const MOVE_MS = 350;
+/** Edge amounts on lines steeper than this (30°) are drawn level. */
+const STEEP_LABEL_RAD = Math.PI / 6;
+/** `?debug=1`: the graph is exposed for tests and layout decisions are logged. */
+const DEBUG = typeof window !== "undefined" && new URLSearchParams(window.location.search).has("debug");
 
 const LAYOUT = {
   name: "dagre",
@@ -175,7 +179,7 @@ function routeAroundNodes(cy: Core) {
     const s = e.source().position();
     const t = e.target().position();
     const mid = ctrl ? { x: (s.x + 2 * ctrl.x + t.x) / 4, y: (s.y + 2 * ctrl.y + t.y) / 4 } : { x: (s.x + t.x) / 2, y: (s.y + t.y) / 2 };
-    const a = Math.atan2(t.y - s.y, t.x - s.x);
+    const a = e.hasClass("flat") ? 0 : Math.atan2(t.y - s.y, t.x - s.x);
     const w = labelWidth(label);
     const h = 18;
     const hw = (w * Math.abs(Math.cos(a)) + h * Math.abs(Math.sin(a))) / 2;
@@ -215,6 +219,12 @@ function routeAroundNodes(cy: Core) {
   const edges = cy.edges().sort((a, b) => Number(b.data("amount") ?? 0) - Number(a.data("amount") ?? 0));
   edges.forEach((e) => {
     e.removeStyle("curve-style control-point-distances control-point-weights");
+    // Amounts follow the line when it is nearly level; on steeper lines they stay level,
+    // so they are never read at a slant.
+    const s = e.source().position();
+    const t = e.target().position();
+    const steep = Math.abs(Math.atan2(t.y - s.y, Math.abs(t.x - s.x))) > STEEP_LABEL_RAD;
+    if (steep !== e.hasClass("flat")) e.toggleClass("flat", steep);
   });
   // Combs and loops keep their shape; their amounts are fixed obstacles.
   edges.forEach((e) => {
@@ -261,13 +271,16 @@ const MAX_PLACED = 24;
 const MAX_REMOVED = 6;
 
 /**
- * Place new nodes into an existing left-to-right layout without moving anything else: each
- * goes one column after the drawn node that sends it funds (or before the one it sends
- * funds to), in the nearest free slot above or below.
+ * Place new nodes into an existing left-to-right layout: each goes one column after what
+ * pays it (or one before what it pays), in the nearest free slot above or below. When a new
+ * route needs more columns than there are before the drawn node it reaches, everything from
+ * that node rightwards moves right as a block (nothing else moves). Returns false if money
+ * would still flow right to left; the caller then lays the whole graph out again.
  */
-function placeNear(cy: Core, added: cytoscape.NodeCollection) {
+function placeNear(cy: Core, added: cytoscape.NodeCollection): boolean {
   type Box = { x1: number; y1: number; x2: number; y2: number };
-  const box = (n: cytoscape.NodeSingular, at?: Position): Box => {
+  type N = cytoscape.NodeSingular;
+  const box = (n: N, at?: Position): Box => {
     const b = n.boundingBox({ includeLabels: true, includeOverlays: false });
     if (!at) return b;
     const p = n.position();
@@ -275,49 +288,124 @@ function placeNear(cy: Core, added: cytoscape.NodeCollection) {
   };
   const overlaps = (a: Box, b: Box, m = 14) => a.x1 < b.x2 + m && b.x1 < a.x2 + m && a.y1 < b.y2 + m && b.y1 < a.y2 + m;
   const pending = new Set(added.map((n) => n.id()));
-  const placed = cy.nodes().filter((n) => !pending.has(n.id())) as unknown as cytoscape.NodeCollection;
-  const boxes: Box[] = placed.map((n) => box(n));
-  // Column spacing and step as the layout made them.
-  const xs = [...new Set(placed.map((n) => Math.round(n.position().x)))].sort((a, b) => a - b);
+  const isNew = (id: string) => pending.has(id);
+  const old: N[] = [];
+  cy.nodes().forEach((n) => {
+    if (!isNew(n.id())) old.push(n);
+  });
+  const node = (id: string) => cy.getElementById(id) as N;
+  const others = (c: cytoscape.CollectionReturnValue, self: string) => {
+    const out: N[] = [];
+    c.forEach((m) => {
+      if (m.isNode() && m.id() !== self) out.push(m);
+    });
+    return out;
+  };
+  // Column spacing as the layout made it.
+  let xs = [...new Set(old.map((n) => Math.round(n.position().x)))].sort((a, b) => a - b);
   const gaps = xs.slice(1).map((x, i) => x - xs[i]!).filter((g) => g > 40).sort((a, b) => a - b);
   const colGap = gaps.length ? gaps[Math.floor(gaps.length / 2)]! : 260;
-  const snap = (x: number) => {
-    const near = xs.find((c) => Math.abs(c - x) < colGap / 3);
-    return near ?? x;
-  };
-  for (let guard = 0; pending.size > 0 && guard < 200; guard++) {
-    let progress = false;
-    for (const id of [...pending]) {
-      const n = cy.getElementById(id) as cytoscape.NodeSingular;
-      const from = n.incomers("node").filter((m) => !pending.has(m.id()));
-      const to = n.outgoers("node").filter((m) => !pending.has(m.id()));
-      if (from.empty() && to.empty()) continue;
-      const anchor = (from.nonempty() ? from[0] : to[0]) as cytoscape.NodeSingular;
-      const a = anchor.position();
-      const x = snap(from.nonempty() ? a.x + colGap : a.x - colGap);
-      const step = Math.max(40, box(n).y2 - box(n).y1 + 16);
-      let y = a.y;
-      for (let k = 0; k < 60; k++) {
-        const cand = a.y + (k % 2 === 0 ? 1 : -1) * Math.ceil(k / 2) * step;
-        if (!boxes.some((b) => overlaps(box(n, { x, y: cand }), b))) {
-          y = cand;
-          break;
-        }
-      }
-      n.position({ x, y });
-      boxes.push(box(n));
-      pending.delete(id);
-      progress = true;
+  const snap = (x: number) => xs.find((c) => Math.abs(c - x) < colGap / 3) ?? x;
+
+  // Flow order among the new nodes: senders first.
+  const indeg = new Map<string, number>([...pending].map((id) => [id, 0]));
+  added.forEach((n) => {
+    for (const m of others(n.outgoers("node"), n.id())) if (indeg.has(m.id())) indeg.set(m.id(), indeg.get(m.id())! + 1);
+  });
+  const order: string[] = [];
+  const queue = [...pending].filter((id) => indeg.get(id) === 0);
+  while (queue.length) {
+    const id = queue.shift()!;
+    order.push(id);
+    for (const m of others(node(id).outgoers("node"), id)) {
+      if (!indeg.has(m.id())) continue;
+      indeg.set(m.id(), indeg.get(m.id())! - 1);
+      if (indeg.get(m.id()) === 0) queue.push(m.id());
     }
-    if (!progress) break;
+  }
+  for (const id of pending) if (!order.includes(id)) order.push(id);
+
+  // 1. Columns: one right of the rightmost sender, else one left of the leftmost receiver.
+  const colX = new Map<string, number>();
+  const columns = () => {
+    colX.clear();
+    for (const id of order) {
+      const n = node(id);
+      const from = others(n.incomers("node"), id)
+        .map((m) => (isNew(m.id()) ? colX.get(m.id()) : m.position().x))
+        .filter((x): x is number => x !== undefined);
+      if (from.length) {
+        colX.set(id, snap(Math.max(...from) + colGap));
+        continue;
+      }
+      const to = others(n.outgoers("node"), id)
+        .filter((m) => !isNew(m.id()))
+        .map((m) => m.position().x);
+      if (to.length) colX.set(id, snap(Math.min(...to) - colGap));
+    }
+  };
+  // 2. Room: a drawn node paid by a new one must be at least half a column to its right.
+  for (let round = 0; round < 8; round++) {
+    columns();
+    let need: { at: number; dx: number } | null = null;
+    for (const id of order) {
+      const x = colX.get(id);
+      if (x === undefined) continue;
+      for (const m of others(node(id).outgoers("node"), id)) {
+        if (isNew(m.id())) continue;
+        const mx = m.position().x;
+        if (mx - x < colGap / 2 && (!need || mx < need.at)) need = { at: mx, dx: x + colGap - mx };
+      }
+    }
+    if (!need) break;
+    const { at, dx } = need;
+    for (const m of old) {
+      const p = m.position();
+      if (p.x >= at - 1) m.position({ x: p.x + dx, y: p.y });
+    }
+    xs = xs.map((c) => (c >= at - 1 ? c + dx : c));
+  }
+  columns();
+
+  // 3. Rows: the nearest free slot by the node it is attached to.
+  const boxes: Box[] = old.map((n) => box(n));
+  const done = new Set<string>();
+  for (const id of order) {
+    const x = colX.get(id);
+    if (x === undefined) continue;
+    const n = node(id);
+    const placedNow = (m: N) => !isNew(m.id()) || done.has(m.id());
+    const anchor = others(n.incomers("node"), id).find(placedNow) ?? others(n.outgoers("node"), id).find(placedNow);
+    const y0 = anchor ? anchor.position().y : 0;
+    const step = Math.max(40, box(n).y2 - box(n).y1 + 16);
+    let y = y0;
+    for (let k = 0; k < 60; k++) {
+      const cand = y0 + (k % 2 === 0 ? 1 : -1) * Math.ceil(k / 2) * step;
+      if (!boxes.some((b) => overlaps(box(n, { x, y: cand }), b))) {
+        y = cand;
+        break;
+      }
+    }
+    n.position({ x, y });
+    boxes.push(box(n));
+    done.add(id);
   }
   // Anything not connected to a drawn node: below everything.
   let bottom = Math.max(...boxes.map((b) => b.y2), 0);
   for (const id of pending) {
-    const n = cy.getElementById(id) as cytoscape.NodeSingular;
+    if (done.has(id)) continue;
     bottom += 80;
-    n.position({ x: xs[0] ?? 0, y: bottom });
+    node(id).position({ x: xs[0] ?? 0, y: bottom });
   }
+  // Money always flows left to right.
+  let ok = true;
+  added.connectedEdges().forEach((e) => {
+    if (e.isEdge() && !e.isLoop() && e.source().position().x >= e.target().position().x - 1) {
+      ok = false;
+      if (DEBUG) console.debug("placeNear: right to left", e.source().id(), "→", e.target().id());
+    }
+  });
+  return ok;
 }
 
 /** Graphs with more nodes than this are laid out in a worker (dagre takes 1–2 s at 1,500+). */
@@ -385,6 +473,7 @@ export function GraphCanvas({
   onSelect,
   controls,
   busy = false,
+  onOpen,
 }: {
   display: Display;
   /** Displayed ids on the selected lead's path. */
@@ -398,6 +487,8 @@ export function GraphCanvas({
   controls: RefObject<GraphControls | null>;
   /** Work on the graph is about to block the page: show that it is being arranged. */
   busy?: boolean;
+  /** Open a group or run of addresses (Enter on it). */
+  onOpen?: (id: string) => void;
 }) {
   const host = useRef<HTMLDivElement>(null);
   const cyRef = useRef<Core | null>(null);
@@ -429,6 +520,10 @@ export function GraphCanvas({
     cy.on("mouseover", "edge", (e) => e.target.addClass("hover"));
     cy.on("mouseout", "edge", (e) => e.target.removeClass("hover"));
     cy.on("dragfree", "node", () => routeAroundNodes(cy));
+    // The canvas changes size with the strips around it (notice, tools), not only the window.
+    const ro = new ResizeObserver(() => cy.resize());
+    ro.observe(host.current);
+    cy.on("destroy", () => ro.disconnect());
     cyRef.current = cy;
     if (new URLSearchParams(window.location.search).has("debug")) {
       (window as unknown as { __chaintrailCy?: Core }).__chaintrailCy = cy;
@@ -518,10 +613,9 @@ export function GraphCanvas({
     });
     const added = cy.nodes().filter((n) => !before.has(n.id()));
     const removed = [...before.keys()].filter((id) => cy.getElementById(id).empty()).length;
-    if (nodesChanged && !first && removed <= MAX_REMOVED && added.length <= MAX_PLACED) {
+    if (nodesChanged && !first && removed <= MAX_REMOVED && added.length <= MAX_PLACED && placeNear(cy, added)) {
       // A few nodes revealed (e.g. the route to a selected lead): place them next to what is
       // already drawn and move nothing else. "Reset layout" gives the full layout again.
-      placeNear(cy, added);
       added.forEach((n) => {
         const old = n.neighborhood("node").filter((m) => before.has(m.id())).first();
         if (old.nonempty()) before.set(n.id(), before.get(old.id())!);
@@ -644,6 +738,13 @@ export function GraphCanvas({
     if (e.key === "Escape") {
       onSelectRef.current(null);
       setSaid("Selection cleared");
+      return;
+    }
+    // Enter opens a selected group or run of addresses.
+    if (e.key === "Enter" && selected?.type === "node" && isGroupId(selected.id) && onOpen) {
+      e.preventDefault();
+      onOpen(selected.id);
+      setSaid("Opened");
       return;
     }
     if (!["ArrowRight", "ArrowLeft", "ArrowUp", "ArrowDown"].includes(e.key)) return;

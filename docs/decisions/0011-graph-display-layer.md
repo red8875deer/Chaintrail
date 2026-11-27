@@ -45,6 +45,16 @@ from it by pure, unit-tested functions (`app/ui/src/lib/graph.ts`, `buildDisplay
   and stay straight). When nodes are added or removed
   the layout is recomputed and nodes glide to their new places (no jump; none with
   reduced motion).
+- **Money flows left to right, always.** A revealed route is placed after what pays it; if
+  it needs more columns than there are before the node it reaches, everything from that node
+  rightwards moves right as a block. Nothing else moves; if left-to-right cannot be kept (a
+  cycle), the whole graph is laid out again. Only a real cycle (funds returning to an
+  earlier address) is drawn right to left.
+- **Nothing silently disappears.** A node whose funds move on through flows hidden by the
+  slider says how much ("+1.2 BTC hidden"). Names from third-party labels have an outer
+  ring (legend, PNG header), so they are never read as on-chain facts.
+- **The graph is never covered:** the notice and the tools are strips above and below it,
+  not overlays. Amounts on lines steeper than 30° are drawn level.
 - **All-outputs traces start from the transaction.** The report lists the traced outputs
   (`seed_outputs`); when they go to several addresses, the graph's start point is the
   transaction itself, with an exact-amount edge to each followed output, so outputs that are
@@ -57,7 +67,9 @@ from it by pure, unit-tested functions (`app/ui/src/lib/graph.ts`, `buildDisplay
   every report node is drawn, grouped or counted as hidden, that the default drawing stays
   under 45 nodes, that every lead's main route is drawn when the lead is selected, that
   revealing a route adds no other small transfers, and that all-outputs traces have one
-  root and draw their largest leads.
+  root and draw their largest leads. Browser checks (`npm run e2e`) assert that selecting
+  leads never moves drawn nodes up, down or left, never swaps two nodes' sides and never
+  adds an edge running right to left.
 - The display was reviewed by driving real traces in a browser (Playwright), measuring
   label overlaps and node movement, and by an independent reviewer pass.
 - Thresholds are named constants in `graph.ts`; change them with this ADR.

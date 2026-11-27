@@ -202,6 +202,7 @@ function Exposure({
           </li>
         ))}
       </ul>
+      <PassedThrough view={view} />
       <SmallBranches view={view} />
       {onLowerMinimum && Number(shareBasisPoints(view.report.stats.below_threshold, total)) >= SMALL_BRANCHES_WARN_BP && (
         <p className="callout small">
@@ -213,6 +214,40 @@ function Exposure({
         </p>
       )}
     </section>
+  );
+}
+
+/** Labelled addresses the funds went through (the trace went on): indirect exposure, with
+ * the traced amount that passed there. Names come from third-party labels. */
+function PassedThrough({ view }: { view: TraceView }) {
+  const r = view.report;
+  const rows = r.labels_seen
+    .map((l) => {
+      const n = view.graph.nodes.find((x) => x.address === l.address.value);
+      return { l, amount: n ? Math.max(n.amount_in, n.amount_out) : 0 };
+    })
+    .filter((x) => x.amount > 0)
+    .sort((a, b) => b.amount - a.amount);
+  if (rows.length === 0) return null;
+  return (
+    <div className="passed-through">
+      <p className="small muted">{r.direction === "forward" ? "Passed through" : "Came through"} labelled addresses:</p>
+      <ul className="exposure-list">
+        {rows.slice(0, 5).map(({ l, amount }) => (
+          <li key={l.address.value} className="exposure-row static" title={l.address.value}>
+            <span className="swatch" style={{ background: categoryColor(l.category) }} />
+            <span className="exposure-name">
+              {l.entity || categoryName(l.category)}
+              <span className="muted small"> · {categoryName(l.category)}</span> <Basis claim={l.claim} />
+            </span>
+            <span className="exposure-amount">
+              <Btc sats={amount} />
+            </span>
+            <span className="muted small exposure-share">{formatShare(amount, r.seed_amount)}</span>
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }
 
@@ -264,8 +299,13 @@ function SmallBranches({ view }: { view: TraceView }) {
 const SMALL_BRANCHES_WARN_BP = 500;
 
 /** Arrow keys, Home and End move through a list of leads and select (one Tab stop). */
-function listKeys(onSelect: (i: number) => void) {
+function listKeys(onSelect: (i: number) => void, onClear?: () => void) {
   return (e: KeyboardEvent<HTMLUListElement>) => {
+    if (e.key === "Escape" && onClear) {
+      e.preventDefault();
+      onClear();
+      return;
+    }
     const items = [...e.currentTarget.querySelectorAll<HTMLLIElement>("li[data-lead]")];
     const at = items.indexOf(document.activeElement as HTMLLIElement);
     const to =
@@ -282,11 +322,14 @@ export function LeadsPanel({
   view,
   selectedLead,
   onSelectLead,
+  onClearLead,
   onLowerMinimum,
 }: {
   view: TraceView;
   selectedLead: number | null;
   onSelectLead: (i: number) => void;
+  /** Esc in the list: no lead selected. */
+  onClearLead?: () => void;
   /** Trace again with a lower minimum branch size. */
   onLowerMinimum?: () => void;
 }) {
@@ -355,7 +398,7 @@ export function LeadsPanel({
             to follow small amounts.
           </p>
         )}
-        <ul className="leads" role="listbox" aria-label="Leads" onKeyDown={listKeys(onSelectLead)}>
+        <ul className="leads" role="listbox" aria-label="Leads" onKeyDown={listKeys(onSelectLead, onClearLead)}>
           {found.map(({ lead, index }, k) => (
             <LeadRow
               key={index}
@@ -391,7 +434,7 @@ export function LeadsPanel({
               role="listbox"
               aria-label="Branches not followed"
               style={{ marginTop: 6 }}
-              onKeyDown={listKeys(onSelectLead)}
+              onKeyDown={listKeys(onSelectLead, onClearLead)}
             >
               {open.map(({ lead, index }, k) => (
                 <LeadRow
@@ -435,7 +478,8 @@ export function LeadsPanel({
         <section aria-label="Labelled addresses passed through">
           <h3 style={{ marginBottom: 6 }}>Labelled addresses passed through</h3>
           <p className="muted small" style={{ marginBottom: 6 }}>
-            These labels were not strong enough to stop the trace.
+            The trace went on past these: wallets of perpetrators and individuals are followed through, and other
+            labels here were too weak to stop it.
           </p>
           <ul className="leads">
             {r.labels_seen.map((l) => (

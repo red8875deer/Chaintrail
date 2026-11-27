@@ -30,6 +30,16 @@ const CASES = [
   ["Batch payout, all outputs", "txid=628fb3f0cac80a37f14d54ffc7ab9e6c4e531cd58f87b8f8cb32b65d8e92f06a&dir=forward"],
 ];
 
+/** Runs in the page: edges drawn right to left (funds flow left to right). */
+function reversedEdges() {
+  const cy = window.__chaintrailCy;
+  let n = 0;
+  cy.edges().forEach((e) => {
+    if (!e.isLoop() && e.target().position().x < e.source().position().x - 20) n++;
+  });
+  return n;
+}
+
 /** Runs in the page: overlaps and view facts of the graph as drawn. */
 function measure() {
   const cy = window.__chaintrailCy;
@@ -104,27 +114,40 @@ try {
     if (m.labelOverlaps.length > MAX_LABEL_OVERLAPS) fail(`${m.labelOverlaps.length} overlapping labels: ${m.labelOverlaps.slice(0, 3).join("; ")}`);
     if (m.leadInView === false) fail("the selected lead is off screen");
 
-    // Selecting leads must not move anything already drawn.
+    // Selecting leads must not rearrange what is drawn: a revealed route may push the part
+    // of the graph to its right further right (as a block); nothing else moves, and money
+    // keeps flowing left to right.
     for (const b of await page.$$(".group-toggle[aria-expanded='false']")) await b.click();
     const leads = await page.$$(".lead");
     let prev = m.pos;
     let worst = 0;
+    let shifted = 0;
+    const reversed0 = await page.evaluate(reversedEdges);
     for (let i = 0; i < Math.min(leads.length, 6); i++) {
       await (await page.$$(".lead"))[i].click();
       await page.waitForTimeout(700);
       const cur = await page.evaluate(measure);
-      for (const [id, p] of Object.entries(cur.pos)) {
+      const ids = Object.keys(cur.pos).filter((id) => prev[id]);
+      for (const id of ids) {
+        const p = cur.pos[id];
         const o = prev[id];
-        if (o) worst = Math.max(worst, Math.hypot(p.x - o.x, p.y - o.y));
+        worst = Math.max(worst, Math.abs(p.y - o.y), o.x - p.x);
+        shifted = Math.max(shifted, p.x - o.x);
       }
+      for (const a of ids)
+        for (const b of ids)
+          if (prev[a].x < prev[b].x - 1 && cur.pos[a].x > cur.pos[b].x + 1) fail(`after selecting lead ${i + 1}: ${a} and ${b} swapped sides`);
+      const reversed = await page.evaluate(reversedEdges);
+      if (reversed > reversed0) fail(`after selecting lead ${i + 1}: ${reversed - reversed0} more edge(s) run right to left`);
       if (cur.nodeOverlaps.length) fail(`after selecting lead ${i + 1}: overlapping nodes ${cur.nodeOverlaps.slice(0, 2).join("; ")}`);
       prev = cur.pos;
     }
-    if (worst > 2) fail(`selecting leads moved drawn nodes by up to ${Math.round(worst)}px`);
+    if (worst > 2) fail(`selecting leads moved drawn nodes up, down or left by up to ${Math.round(worst)}px`);
     if (errors.length) fail(`console errors: ${errors.slice(0, 2).join(" | ")}`);
     console.log(
       `${failures.some((f) => f.startsWith(name)) ? "FAIL" : "ok  "} ${name}: ${m.nodes} nodes, zoom ${m.zoom.toFixed(2)}, ` +
-        `${m.labelOverlaps.length} label overlap(s), ${leads.length} leads, max move ${Math.round(worst)}px`,
+        `${m.labelOverlaps.length} label overlap(s), ${leads.length} leads, max move ${Math.round(worst)}px` +
+        (shifted > 2 ? `, block shifted right ${Math.round(shifted)}px` : ""),
     );
     await page.close();
   }

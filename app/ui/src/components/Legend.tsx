@@ -124,6 +124,19 @@ export function Legend({ view }: { view: TraceView }) {
         </li>
         <li>
           <svg width="16" height="16" aria-hidden="true">
+            <circle cx="8" cy="8" r="4" fill="var(--n-exchange)" />
+            <circle cx="8" cy="8" r="6.5" fill="none" stroke="var(--ink)" strokeWidth="1.2" opacity="0.7" />
+          </svg>
+          Outer ring: named from a third-party label (source in the details)
+        </li>
+        <li>
+          <span aria-hidden="true" className="mono" style={{ fontSize: "0.7rem", width: 16 }}>
+            +
+          </span>
+          "+1.2 BTC hidden": funds moving on through flows hidden by the slider
+        </li>
+        <li>
+          <svg width="16" height="16" aria-hidden="true">
             <line x1="1" y1="8" x2="15" y2="8" stroke="var(--amber)" strokeWidth="3" />
           </svg>
           Path of the selected lead

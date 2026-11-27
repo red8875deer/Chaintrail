@@ -13,6 +13,22 @@ import { extractId, formatBtc, formatElapsed, formatInt, looksLikeAddress, parse
 import { buildDisplay, defaultMinShareBp, displayPath, isGroupId, leadPath, leadSpine, nodeForLead } from "../lib/graph";
 import { DEFAULT_MAX_HOPS, DEFAULT_MAX_TXS, type TraceParams, href, parseRoute, sameTrace } from "../lib/route";
 
+/** Traces opened in this window, newest last: Back and Forward reopen them at once. */
+const recent = new Map<string, View>();
+const RECENT_MAX = 6;
+
+/** What the investigator had on screen for a trace, kept in its history entry. */
+interface ViewState {
+  lead: number | null;
+  hideBp: number;
+  simplify: boolean;
+  expanded: string[];
+}
+
+function savedViewState(): ViewState | null {
+  return (history.state as { ui?: ViewState } | null)?.ui ?? null;
+}
+
 /** Graphs with more addresses than this show "Arranging…" before a redraw. */
 const BIG_VIEW = 300;
 
@@ -135,7 +151,8 @@ export function TraceView({ params }: { params: TraceParams | null }) {
   const controls = useRef<GraphControls | null>(null);
   const runId = useRef(0);
 
-  const run = useCallback(async (f: FormState) => {
+  /** `fresh`: asked for with the Trace button, so never answered from this window's memory. */
+  const run = useCallback(async (f: FormState, fresh = false) => {
     const req = toRequest(f);
     if (typeof req === "string") {
       setError(new Error(req));
@@ -160,8 +177,11 @@ export function TraceView({ params }: { params: TraceParams | null }) {
     };
     const current = parseRoute(window.location.hash);
     const url = href({ page: "trace", params: target });
+    // Reopening the same trace (Back, Forward, reload) keeps what was on screen.
+    let restore: ViewState | null = null;
     if (current.page === "trace" && current.params && sameTrace(current.params, target)) {
-      history.replaceState(null, "", url);
+      restore = savedViewState();
+      history.replaceState(history.state, "", url);
     } else {
       history.pushState(null, "", url);
     }
@@ -176,16 +196,28 @@ export function TraceView({ params }: { params: TraceParams | null }) {
     setStarted(Date.now());
     const stop = await onTraceProgress((p) => id === runId.current && setProgress(p));
     try {
-      const v = await call("btc_trace", req);
+      const key = JSON.stringify(req);
+      const v = (!fresh && recent.get(key)) || (await call("btc_trace", req));
       if (id !== runId.current) return;
+      recent.delete(key);
+      recent.set(key, v);
+      if (recent.size > RECENT_MAX) recent.delete(recent.keys().next().value!);
       setView(v);
-      setHideBp(defaultMinShareBp(v));
-      setExpanded(new Set());
       setNoteClosed(false);
       setViewTarget(null);
-      // Show the strongest result at once: the largest endpoint, else the largest branch.
-      const first = v.report.leads.findIndex((l) => l.kind.kind !== "unexplored");
-      setSelectedLead(first >= 0 ? first : v.report.leads.length > 0 ? 0 : null);
+      if (restore) {
+        setHideBp(restore.hideBp);
+        setSimplify(restore.simplify);
+        setExpanded(new Set(restore.expanded));
+        setSelectedLead(restore.lead !== null && restore.lead < v.report.leads.length ? restore.lead : null);
+      } else {
+        setHideBp(defaultMinShareBp(v));
+        setSimplify(true);
+        setExpanded(new Set());
+        // Show the strongest result at once: the largest endpoint, else the largest branch.
+        const first = v.report.leads.findIndex((l) => l.kind.kind !== "unexplored");
+        setSelectedLead(first >= 0 ? first : v.report.leads.length > 0 ? 0 : null);
+      }
     } catch (e) {
       if (id === runId.current) setError(e);
     } finally {
@@ -215,9 +247,19 @@ export function TraceView({ params }: { params: TraceParams | null }) {
     return () => clearInterval(t);
   }, [running]);
 
+  // Keep what is on screen in this trace's history entry, for Back and Forward.
+  useEffect(() => {
+    if (!view || running) return;
+    const t = setTimeout(() => {
+      const ui: ViewState = { lead: selectedLead, hideBp, simplify, expanded: [...expanded] };
+      history.replaceState({ ...((history.state as object | null) ?? {}), ui }, "", window.location.href);
+    }, 300);
+    return () => clearTimeout(t);
+  }, [view, running, selectedLead, hideBp, simplify, expanded]);
+
   const submit = (e: FormEvent) => {
     e.preventDefault();
-    void run(form);
+    void run(form, true);
   };
   // Changing what is traced ends a continuation: its share belongs to that seed only.
   const set = <K extends keyof FormState>(k: K, v: FormState[K]) =>
@@ -283,8 +325,15 @@ export function TraceView({ params }: { params: TraceParams | null }) {
     void run({ ...fromParams(current.page === "trace" ? current.params : null), minBtc: formatBtc(min, 8) });
   };
 
+  // Selecting never toggles off (arrow keys and clicks stay predictable); selecting the
+  // chosen lead again brings it back into view. Close or Esc clears it.
   const selectLead = (i: number) => {
-    setSelectedLead((cur) => (cur === i ? null : i));
+    if (i === selectedLead && view && display) {
+      const n = nodeForLead(view, i);
+      const id = n ? display.nodeOf.get(n.id) : undefined;
+      if (id) setViewTarget({ ids: [id] });
+    }
+    setSelectedLead(i);
     setSelection(null);
   };
 
@@ -376,6 +425,23 @@ export function TraceView({ params }: { params: TraceParams | null }) {
         <div className="canvas-wrap">
           {view && !running && (
             <>
+              {display && !noteClosed && (display.hidden > 0 || display.unlinked > 0 || display.groups.size > 0) && (
+                <div className="view-note" role="status">
+                  <p>
+                    Showing {formatInt(display.shown)} of {formatInt(display.total)} addresses
+                    {display.total - display.shown - display.hidden - display.unlinked > 0 &&
+                      ` (and ${formatInt(display.total - display.shown - display.hidden - display.unlinked)} more inside groups and runs)`}
+                    {display.hidden > 0 &&
+                      `; ${formatInt(display.hidden)} with smaller flows ${display.hidden === 1 ? "is" : "are"} hidden (slider below)`}
+                    {display.unlinked > 0 && `; ${formatInt(display.unlinked)} not linked to the start`}.
+                    {display.groups.size > 0 && " Groups and runs of addresses open on click."} Every lead is listed with the results.
+                  </p>
+                  <button type="button" className="note-close" aria-label="Close this note" onClick={() => setNoteClosed(true)}>
+                    ×
+                  </button>
+                </div>
+              )}
+              <div className="canvas-stage">
               {display && (
                 <GraphCanvas
                   display={display}
@@ -395,25 +461,11 @@ export function TraceView({ params }: { params: TraceParams | null }) {
                   }}
                   controls={controls}
                   busy={busy}
+                  onOpen={expand}
                 />
               )}
               <Legend view={view} />
-              {display && !noteClosed && (display.hidden > 0 || display.unlinked > 0 || display.groups.size > 0) && (
-                <div className="view-note" role="status">
-                  <p>
-                    Showing {formatInt(display.shown)} of {formatInt(display.total)} addresses
-                    {display.total - display.shown - display.hidden - display.unlinked > 0 &&
-                      ` (and ${formatInt(display.total - display.shown - display.hidden - display.unlinked)} more inside groups and runs)`}
-                    {display.hidden > 0 &&
-                      `; ${formatInt(display.hidden)} with smaller flows ${display.hidden === 1 ? "is" : "are"} hidden (slider below)`}
-                    {display.unlinked > 0 && `; ${formatInt(display.unlinked)} not linked to the start`}.
-                    {display.groups.size > 0 && " Groups and runs of addresses open on click."} Every lead is listed with the results.
-                  </p>
-                  <button type="button" className="note-close" aria-label="Close this note" onClick={() => setNoteClosed(true)}>
-                    ×
-                  </button>
-                </div>
-              )}
+              </div>
               <div className="canvas-tools" role="toolbar" aria-label="Graph tools">
                 <label title="Hide flows smaller than this share of the traced amount">
                   Hide flows under {(sliderBp / 100).toFixed(sliderBp % 100 ? 1 : 0)}%
@@ -513,6 +565,10 @@ export function TraceView({ params }: { params: TraceParams | null }) {
                   view={view}
                   selectedLead={selectedLead}
                   onSelectLead={selectLead}
+                  onClearLead={() => {
+                    setSelectedLead(null);
+                    setSelection(null);
+                  }}
                   onLowerMinimum={running || view.report.min_amount <= 1 ? undefined : lowerMinimum}
                 />
                 <div className="callout">
@@ -532,7 +588,7 @@ export function TraceView({ params }: { params: TraceParams | null }) {
                     onClick={() => {
                       const png = controls.current?.png() ?? "";
                       const note = display
-                        ? `Drawn: ${display.shown} of ${display.total} addresses${display.hidden > 0 ? `; ${display.hidden} with flows under ${(hideBp / 100).toFixed(hideBp % 100 ? 1 : 0)}% of the traced amount hidden` : ""}${display.groups.size > 0 ? "; smaller branches grouped and runs of addresses collapsed" : ""}. Every lead is in the CSV and JSON exports.`
+                        ? `Drawn: ${display.shown} of ${display.total} addresses${display.hidden > 0 ? `; ${display.hidden} with flows under ${(hideBp / 100).toFixed(hideBp % 100 ? 1 : 0)}% of the traced amount hidden` : ""}${display.groups.size > 0 ? "; smaller branches grouped and runs of addresses collapsed" : ""}. Amounts on lines are BTC.${selectedLead !== null && view.report.leads[selectedLead] ? ` Highlighted: the route to "${view.report.leads[selectedLead]!.title}".` : ""} Every lead is in the CSV and JSON exports.`
                         : "";
                       if (!exportPng(view, png, note)) window.alert("There is no graph to save at the current setting.");
                     }}

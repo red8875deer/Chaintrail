@@ -123,7 +123,7 @@ export function RequestBlock({ view, node, lead }: { view: TraceView; node: Grap
     ...(deposits.length === 1 ? [] : deposits.map((d) => `  - ${d.txid} (${formatUtc(d.time)}): ${amountText(d)}`)),
     `Traced total: ${formatBtc(tracedTotal, 8)} BTC, ${formatShare(tracedTotal, r.seed_amount)} of the traced amount`,
     ...(later ? [`The service then moved the funds in transaction ${later}`] : []),
-    `Path (transactions from the start): ${lead.path.join(" -> ")}`,
+    `Shortest route (transactions from the start): ${lead.path.join(" -> ")}`,
     `Amounts follow the pro-rata rule: where funds were mixed, each output gets a share in proportion to value.`,
   ].join("\n");
 
@@ -136,6 +136,25 @@ export function RequestBlock({ view, node, lead }: { view: TraceView; node: Grap
   return (
     <section className="request" aria-label="For a records request">
       <h4>For a records request</h4>
+      <div className="request-actions">
+        {!single && deposits.length > SHOWN && (
+          <button type="button" className="btn subtle" onClick={() => setAll((a) => !a)}>
+            {all ? "Show fewer" : `Show all ${deposits.length}`}
+          </button>
+        )}
+        <button
+          type="button"
+          className="btn"
+          onClick={() =>
+            navigator.clipboard?.writeText(text).then(
+              () => setCopied(true),
+              () => setCopied(false),
+            )
+          }
+        >
+          {copied ? "Copied" : deposits.length > 1 ? `Copy summary (all ${deposits.length})` : "Copy summary"}
+        </button>
+      </div>
       <dl className="request-list">
         {address && (
           <>
@@ -207,25 +226,6 @@ export function RequestBlock({ view, node, lead }: { view: TraceView; node: Grap
           ))}
         </ol>
       )}
-      <div className="request-actions">
-        {!single && deposits.length > SHOWN && (
-          <button type="button" className="btn subtle" onClick={() => setAll((a) => !a)}>
-            {all ? "Show fewer" : `Show all ${deposits.length}`}
-          </button>
-        )}
-        <button
-          type="button"
-          className="btn"
-          onClick={() =>
-            navigator.clipboard?.writeText(text).then(
-              () => setCopied(true),
-              () => setCopied(false),
-            )
-          }
-        >
-          {copied ? "Copied" : deposits.length > 1 ? `Copy summary (all ${deposits.length})` : "Copy summary"}
-        </button>
-      </div>
     </section>
   );
 }

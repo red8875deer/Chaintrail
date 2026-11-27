@@ -102,8 +102,21 @@ export function leadsCsv(view: TraceView): string {
     "amount_basis",
     "coin",
     "path",
+    "all_transactions",
     "evidence_or_source",
   ];
+  // Every transfer into an endpoint address (forward) or out of a source (backward), oldest
+  // first: the lead's own transaction is on its shortest route, which can be a small test
+  // payment before the main deposit.
+  const forward = r.direction === "forward";
+  const transfers = (l: (typeof r.leads)[number]) => {
+    if (l.kind.kind !== "endpoint" || !l.address) return "";
+    const a = l.address.value;
+    const seen = new Map<string, number>();
+    for (const f of r.flows)
+      if ((forward ? f.to?.value : f.from?.value) === a && !seen.has(f.txid)) seen.set(f.txid, f.time ?? Infinity);
+    return [...seen].sort((x, y) => x[1] - y[1]).map(([t]) => t).join(" ");
+  };
   const rows = r.leads.map((l) => {
     const c = describeClaim(l.claim);
     return [
@@ -121,6 +134,7 @@ export function leadsCsv(view: TraceView): string {
       l.mixed_in ? `pro-rata share (funds mixed in ${l.mixed_in})` : "on-chain (unmixed)",
       l.txid && l.vout !== null && l.vout !== undefined ? `${l.txid}:${l.vout}` : "",
       l.path.join(" > "),
+      transfers(l),
       [...c.evidence, c.url ?? ""].filter(Boolean).join(" | "),
     ];
   });
@@ -173,7 +187,7 @@ export function exportPng(view: TraceView, dataUrl: string, drawnNote: string): 
       `ChainTrail trace: ${view.report.direction} from ${view.report.seed}`,
       `Traced amount ${formatBtc(view.report.seed_amount, 8)} BTC. Generated ${meta.generated_at}${meta.app_version ? ` with ChainTrail ${meta.app_version}` : ""}${meta.data_source ? ` from ${meta.data_source}` : ""}.`,
       drawnNote,
-      "Leads are leads, not proof. Amounts after mixing are pro-rata shares. Dashed outlines: identified by inference.",
+      "Leads are leads, not proof. Amounts after mixing are pro-rata shares. Dashed outline: identified by inference. Outer ring: named from a third-party label.",
     ].filter(Boolean);
     const scale = Math.max(1, Math.min(2, img.width / 1200));
     const lineH = 22 * scale;

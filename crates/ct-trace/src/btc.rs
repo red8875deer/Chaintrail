@@ -753,10 +753,15 @@ impl<'a> Tracer<'a> {
                 lead.confidence = lead.confidence.min(lead.claim.confidence());
             }
             lead.amount += amount;
-            // Hops and path always describe the same (shortest) route.
+            // Hops, path and transaction always describe the same (shortest) route; every
+            // transfer into the lead is in the flows.
             if hops < lead.hops {
                 lead.hops = hops;
                 lead.path = path.to_vec();
+                if txid.is_some() {
+                    lead.txid = txid;
+                }
+                lead.via = self.via.clone();
             }
             lead.first_time = match (lead.first_time, time) {
                 (Some(a), Some(b)) => Some(a.min(b)),

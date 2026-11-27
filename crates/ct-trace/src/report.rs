@@ -91,8 +91,9 @@ pub struct Lead {
     pub via: Option<Address>,
     /// Transaction where the lead was found. For funds at rest and branches not followed:
     /// the transaction that created the coin (`txid:vout`); for endpoints found by an
-    /// address: the transaction that paid it; for endpoints found by a transaction's shape
-    /// (CoinJoin, service sweep or payout): that transaction.
+    /// address: the transaction that paid it (on the route in `path`; an endpoint reached by
+    /// several transfers has all of them in the flows); for endpoints found by a
+    /// transaction's shape (CoinJoin, service sweep or payout): that transaction.
     pub txid: Option<String>,
     /// Output of `txid` holding the funds, when the lead is one coin (at rest, not followed).
     #[serde(default)]

@@ -158,3 +158,14 @@ describe("grouping and chains", () => {
     expect(p.nodes.has("bc1qu57hnxf0c65fsdd5kewcsfeag6sljgfhz99zwt")).toBe(false);
   });
 });
+
+describe("funds not drawn", () => {
+  it("say on the node how much moves on through hidden flows, and nothing when all is drawn", () => {
+    const v = large as unknown as TraceView;
+    const hidden = buildDisplay(v, { ...defaults(v), minShareBp: 500 });
+    const marked = hidden.elements.filter((e) => e.group === "nodes" && /BTC hidden$/.test(String(e.data.label)));
+    expect(marked.length).toBeGreaterThan(0);
+    const all = buildDisplay(v, { ...defaults(v), minShareBp: 0, simplify: false });
+    expect(all.elements.some((e) => e.group === "nodes" && /BTC hidden$/.test(String(e.data.label)))).toBe(false);
+  });
+});
