@@ -106,7 +106,7 @@ export function Legend({ view }: { view: TraceView }) {
           <svg width="16" height="16" aria-hidden="true">
             <line x1="1" y1="8" x2="15" y2="8" stroke="var(--trail)" strokeWidth="2.5" />
           </svg>
-          Funds moved (thicker = more; ×N = N transfers combined)
+          Funds moved (thicker = more; "(3 tx)" = 3 transfers combined)
         </li>
         {hasChange && (
           <li>

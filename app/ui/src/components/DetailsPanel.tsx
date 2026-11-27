@@ -270,7 +270,9 @@ function DetailsBody({
         <p className="small muted">
           {loop
             ? `The address paid itself ${members.length} time${members.length === 1 ? "" : "s"}. Each time the same coins moved again, so the amount is the largest single move, not a total.`
-            : `${members.length} transfer${members.length === 1 ? "" : "s"} drawn as one line, with their total.`}
+            : members.length === 1
+              ? "One transfer."
+              : `${members.length} transfers drawn as one line; the amount is their total.`}
         </p>
         <ul className="evidence" style={{ maxHeight: 220, overflow: "auto" }}>
           {members.slice(0, 30).map((e) => (
@@ -301,6 +303,10 @@ function EdgeDetails({ view, edgeId, onClose }: { view: TraceView; edgeId: strin
   const to = nodeById(view, e.target);
   // The whole on-chain payment this traced share is part of.
   const whole = useOnChainAmount(e.txid, to?.address ?? null, "to");
+  // Traced funds can reach the payment from several input addresses (one line each).
+  const siblings = view.graph.edges.filter((x) => x.txid === e.txid && x.target === e.target && x.source !== x.target);
+  const tracedInPayment = siblings.reduce((s, x) => s + x.amount, 0);
+  const mixed = r.flows.some((f) => f.txid === e.txid && f.to?.value === to?.address && f.mixed_in);
   return (
       <section className="details" aria-label="Selected flow">
         <div className="details-head">
@@ -314,9 +320,23 @@ function EdgeDetails({ view, edgeId, onClose }: { view: TraceView; edgeId: strin
         </p>
         {whole.amount !== null && whole.amount > 0 && (
           <p className="small">
-            The transaction paid <Btc sats={whole.amount} /> to this address; the traced share is{" "}
-            {formatShare(e.amount, whole.amount)} of it
-            {e.amount < whole.amount ? " (the rest came from other funds mixed in this transaction)." : "."}
+            The transaction paid <Btc sats={whole.amount} /> to this address.{" "}
+            {siblings.length > 1 && (
+              <>
+                Traced funds reached it from {siblings.length} input addresses, <Btc sats={tracedInPayment} /> in all; this
+                line is the part from {from?.label ?? e.source}.{" "}
+              </>
+            )}
+            {tracedInPayment >= whole.amount ? (
+              "All of it is traced funds."
+            ) : (
+              <>
+                The other <Btc sats={whole.amount - tracedInPayment} />{" "}
+                {mixed
+                  ? "came from other funds mixed in this transaction."
+                  : "is not part of the funds traced here."}
+              </>
+            )}
           </p>
         )}
         <p className="small">
@@ -375,7 +395,9 @@ function NodeDetails({
   const partRoute = lead !== undefined && lead.hops > 0 && routeAmount > 0 && routeAmount * 100 < lead.amount * 99;
   const seen = r.labels_seen.find((l) => l.address.value === node.address);
   const next = nextTrace(view, node, lead);
-  const title = node.entity ?? (node.kind === "transaction" ? "Transaction" : node.seed ? "Start of the trace" : "Address");
+  const title =
+    node.entity ??
+    (node.seed ? "Start of the trace" : lead ? lead.title : node.kind === "transaction" ? "Transaction" : "Address");
 
   return (
     <section className="details" aria-label="Selected item">

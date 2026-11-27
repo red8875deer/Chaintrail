@@ -218,6 +218,12 @@ fact (funds at rest, not followed) becomes an inference about the amount (Medium
 evidence names that transaction. Identifications (labels, service and CoinJoin detection)
 keep their own confidence; the amount basis is shown next to them.
 
+**Continuing a trace.** A continuation follows only the share the earlier trace carried
+(`seed_share`), keeps its earlier mixing (`mixed_in`) and records the earlier trace's seed
+(`continued_from`) so exports can be followed back to it; the record does not change what
+is traced. Continuing from an address on the way uses the largest transfer into it
+(forward) or out of it (backward); the UI says when other transfers would be separate traces.
+
 ## 7. Golden cases
 
 `crates/ct-trace/tests/golden/` holds fund flows documented by US government sources,

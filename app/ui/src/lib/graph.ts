@@ -63,6 +63,16 @@ const LABEL_MIN_BP = 100;
 const BUSY_EDGES = 20;
 /** Edges meeting at one node before their labels move to the unshared end. */
 const FAN = 3;
+/** Fan combs: shortest and longest stub before the trunk (px), and the room around amounts. */
+const MIN_TURN = 112;
+const MAX_TURN = 200;
+const STUB_GAP = 8;
+const ARROW_ROOM = 8;
+
+/** Width of an edge amount label (12px monospace, with its background padding). */
+export function labelWidth(label: string): number {
+  return label.length * 7.4 + 6;
+}
 
 function basis(view: TraceView, n: GraphNode): "fact" | "inference" | "attribution" | "none" {
   if (!n.lead) return n.entity ? "attribution" : "none";
@@ -414,6 +424,24 @@ export function buildDisplay(view: TraceView, o: DisplayOptions): Display {
     inDeg.set(m.target, (inDeg.get(m.target) ?? 0) + 1);
     outDeg.set(m.source, (outDeg.get(m.source) ?? 0) + 1);
   }
+  const labelOf = (m: { source: string; target: string; amount: number; members: unknown[] }) =>
+    formatBtcShort(m.amount) +
+    (m.members.length > 1 ? (m.source === m.target ? `, to itself ${m.members.length} times` : ` (${m.members.length} tx)`) : "");
+  // A fan's stubs are as long as its widest amount needs: the amount sits between the
+  // node and the trunk, never over the node or across the trunk.
+  const sizeOf = new Map<string, number>();
+  for (const el of elements) if (el.group === "nodes") sizeOf.set(String(el.data.id), Number(el.data.size ?? 30));
+  const fanTurn = new Map<string, number>();
+  for (const m of merged.values()) {
+    if (m.source === m.target) continue;
+    const fanIn = (inDeg.get(m.target) ?? 0) >= FAN && (outDeg.get(m.source) ?? 0) === 1;
+    const fanOut = (outDeg.get(m.source) ?? 0) >= FAN && (inDeg.get(m.target) ?? 0) === 1;
+    if (!fanIn && !fanOut) continue;
+    const end = fanIn ? m.source : m.target;
+    const need = (sizeOf.get(end) ?? 30) / 2 + STUB_GAP + labelWidth(labelOf(m)) + STUB_GAP + (fanOut ? ARROW_ROOM : 0);
+    const key = fanIn ? `in:${m.target}` : `out:${m.source}`;
+    fanTurn.set(key, Math.min(MAX_TURN, Math.max(fanTurn.get(key) ?? MIN_TURN, need)));
+  }
   for (const [key, m] of merged) {
     const first = m.members[0]!;
     const single = m.members.length === 1 && !isGroupId(m.source) && !isGroupId(m.target);
@@ -437,11 +465,19 @@ export function buildDisplay(view: TraceView, o: DisplayOptions): Display {
         id,
         source: m.source,
         target: m.target,
-        label:
-          formatBtcShort(m.amount) +
-
-          (m.members.length > 1 ? (loop ? `, to itself ${m.members.length} times` : ` ×${m.members.length}`) : ""),
+        label: labelOf(m),
         width,
+        // Fans: where the comb turns, and where the amount sits on the stub.
+        turn: fanIn ? fanTurn.get(`in:${m.target}`) : fanOut ? -(fanTurn.get(`out:${m.source}`) ?? MIN_TURN) : undefined,
+        stubOffset:
+          fanIn || fanOut
+            ? Math.round(
+                (sizeOf.get(fanIn ? m.source : m.target) ?? 30) / 2 +
+                  STUB_GAP +
+                  (fanOut ? ARROW_ROOM : 0) +
+                  labelWidth(labelOf(m)) / 2,
+              )
+            : undefined,
         // Keep the amount clear of the line and its arrow, however thick the line is.
         labelDy: -Math.round(6 + 1.6 * width),
         weight: 1 + Math.round(bp / 100),
@@ -617,15 +653,14 @@ export function graphStyle(p: Palette): StylesheetJsonBlock[] {
         "mid-target-arrow-shape": "none",
       },
     },
-    { selector: "edge.fan-in", style: { "taxi-turn": "112px" } },
-    { selector: "edge.fan-out", style: { "taxi-turn": "-112px" } },
+    { selector: "edge.fan-in, edge.fan-out", style: { "taxi-turn": "data(turn)" as never } },
     {
       selector: "edge.lbl-src",
-      style: { label: "", "source-label": "data(label)", "source-text-offset": 50, "source-text-rotation": "none" },
+      style: { label: "", "source-label": "data(label)", "source-text-offset": "data(stubOffset)" as never, "source-text-rotation": "none" },
     },
     {
       selector: "edge.lbl-tgt",
-      style: { label: "", "target-label": "data(label)", "target-text-offset": 56, "target-text-rotation": "none" },
+      style: { label: "", "target-label": "data(label)", "target-text-offset": "data(stubOffset)" as never, "target-text-rotation": "none" },
     },
     { selector: "edge.change", style: { "line-style": "dashed", "line-dash-pattern": [7, 4] } },
     // Self-transfers loop over the top: arrows arrive from the left, labels sit below.
@@ -636,13 +671,15 @@ export function graphStyle(p: Palette): StylesheetJsonBlock[] {
     { selector: "edge.minor.hover, edge.minor.path, edge.minor:selected", style: { label: "data(label)" } },
     {
       selector: "edge.minor.fan-in.hover, edge.minor.fan-in.path, edge.minor.fan-in:selected",
-      style: { label: "", "source-label": "data(label)", "source-text-offset": 50, "source-text-rotation": "none" },
+      style: { label: "", "source-label": "data(label)", "source-text-offset": "data(stubOffset)" as never, "source-text-rotation": "none" },
     },
     {
       selector: "edge.minor.fan-out.hover, edge.minor.fan-out.path, edge.minor.fan-out:selected",
-      style: { label: "", "target-label": "data(label)", "target-text-offset": 56, "target-text-rotation": "none" },
+      style: { label: "", "target-label": "data(label)", "target-text-offset": "data(stubOffset)" as never, "target-text-rotation": "none" },
     },
-    { selector: ".dim", style: { opacity: 0.3 } },
+    // Dimmed: shapes and lines fade, labels stay readable (at least 3:1 against the paper).
+    { selector: "node.dim", style: { "background-opacity": 0.28, "border-opacity": 0.28, "text-opacity": 0.62 } },
+    { selector: "edge.dim", style: { opacity: 1, "line-opacity": 0.22, "text-opacity": 0.62 } },
     {
       selector: "edge.path",
       style: {
@@ -654,7 +691,7 @@ export function graphStyle(p: Palette): StylesheetJsonBlock[] {
       },
     },
     { selector: "node.path", style: { "border-color": p.amber, "border-width": 4, opacity: 1, "z-index": 10 } },
-    { selector: "edge.hover", style: { opacity: 1, "z-index": 20 } },
+    { selector: "edge.hover", style: { opacity: 1, "line-opacity": 1, "text-opacity": 1, "z-index": 20 } },
     {
       selector: ":selected",
       style: { "overlay-color": p.amber, "overlay-opacity": 0.18, "overlay-padding": 6 },

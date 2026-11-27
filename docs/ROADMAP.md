@@ -56,6 +56,7 @@ Dates are not committed; quality is.
 - [x] Exports carry provenance (time, app version, data source, label data, settings, path per lead); PNG with header; CSV safe against formulas
 - [x] Keyboard use of the graph and leads; contrast; narrow screens; graph browser checks in CI (`npm run e2e`)
 - [x] Large graphs (300+ addresses) laid out off the main thread; worst interaction on a 1,663-address trace under 0.5 s
+- [x] Second UI audit fixes: records block lists every deposit; fees and unfollowed small branches shown apart (re-run with a lower minimum offered at 5%+); continuations name their source trace; router takes the least-crossing curve; "(N tx)" labels with fan stubs sized to fit; dimmed labels keep 3:1 contrast; busy notice before large redraws; start node never cut in half
 - [x] Exports: report JSON, leads CSV, graph PNG
 - [x] Mock mode with recorded data; UI unit tests; browser checks with Playwright
 - [x] Release workflow for Windows / macOS / Linux installers (unsigned for now)

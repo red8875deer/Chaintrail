@@ -2,9 +2,9 @@
 // address, which transaction and when, how much was paid there on-chain and how much of
 // it is the traced share, and why we think it is that service. Copyable as plain text.
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { call } from "../api/client";
-import type { GraphNode, Lead, TraceView, TxView } from "../api/types";
+import type { GraphNode, Lead, TraceView } from "../api/types";
 import { formatBtc, formatShare, formatUtc } from "../lib/format";
 import { categoryName, describeClaim } from "../lib/meaning";
 import { href } from "../lib/route";
@@ -36,44 +36,77 @@ export function useOnChainAmount(txid: string | undefined, address: string | nul
   return { amount, failed };
 }
 
+/** One transfer into the endpoint (forward) or out of the source (backward). */
+interface Deposit {
+  txid: string;
+  /** Block time; null while unconfirmed. */
+  time: number | null;
+  /** Traced funds in this transfer (sats). */
+  traced: number;
+}
+
+/** Most deposits whose on-chain amounts are looked up (each is one cached transaction). */
+const MAX_LOOKUPS = 60;
+/** Deposits listed before "Show all". */
+const SHOWN = 6;
+
 export function RequestBlock({ view, node, lead }: { view: TraceView; node: GraphNode; lead: Lead }) {
   const r = view.report;
   const forward = r.direction === "forward";
-  // The transfer that reached the endpoint (forward) or left the source (backward).
-  const edge = view.graph.edges
-    .filter((e) => e.source !== e.target && (forward ? e.target === node.id : e.source === node.id))
-    .sort((a, b) => b.amount - a.amount)[0];
-  const [tx, setTx] = useState<TxView | null>(null);
+  // Every transfer that reached the endpoint (forward) or left the source (backward), oldest
+  // first: a records request should name all of them, not just the largest.
+  const deposits = useMemo(() => {
+    const by = new Map<string, Deposit>();
+    for (const e of view.graph.edges) {
+      if (e.source === e.target || (forward ? e.target !== node.id : e.source !== node.id)) continue;
+      const d = by.get(e.txid) ?? { txid: e.txid, time: e.time, traced: 0 };
+      d.traced += e.amount;
+      by.set(e.txid, d);
+    }
+    const t = (d: Deposit) => d.time ?? Number.MAX_SAFE_INTEGER;
+    return [...by.values()].sort((a, b) => t(a) - t(b) || b.traced - a.traced);
+  }, [view, node.id, forward]);
+  const [onChain, setOnChain] = useState<Map<string, number>>(new Map());
   const [failed, setFailed] = useState(false);
   const [copied, setCopied] = useState(false);
-  const txid = edge?.txid;
+  const [all, setAll] = useState(false);
+  // A service found by a transaction (e.g. a withdrawal payout traced back) has no single
+  // address: the request names the transactions.
+  const address = node.address;
   useEffect(() => {
     let live = true;
-    setTx(null);
+    setOnChain(new Map());
     setFailed(false);
     setCopied(false);
-    if (txid)
-      call("btc_tx", { txid })
-        .then((t) => live && setTx(t))
-        .catch(() => live && setFailed(true));
+    setAll(false);
+    if (address)
+      for (const d of deposits.slice(0, MAX_LOOKUPS))
+        call("btc_tx", { txid: d.txid })
+          .then((t) => {
+            if (!live) return;
+            const sum = forward
+              ? t.outputs.filter((o) => o.address === address).reduce((s, o) => s + o.value, 0)
+              : t.inputs.filter((i) => i.address === address).reduce((s, i) => s + i.value, 0);
+            setOnChain((m) => new Map(m).set(d.txid, sum));
+          })
+          .catch(() => live && setFailed(true));
     return () => {
       live = false;
     };
-  }, [txid]);
-  if (!edge) return null;
+  }, [deposits, address, forward]);
+  if (deposits.length === 0) return null;
 
-  // A service found by a transaction (e.g. a withdrawal payout traced back) has no single
-  // address: the request names the transaction.
-  const address = node.address;
-  const onChain = !address
-    ? null
-    : tx
-    ? forward
-      ? tx.outputs.filter((o) => o.address === address).reduce((s, o) => s + o.value, 0)
-      : tx.inputs.filter((i) => i.address === address).reduce((s, i) => s + i.value, 0)
-    : null;
   const claim = describeClaim(lead.claim);
-  const later = forward && lead.txid && lead.txid !== edge.txid ? lead.txid : null;
+  const tracedTotal = deposits.reduce((s, d) => s + d.traced, 0);
+  const single = deposits.length === 1 ? deposits[0]! : null;
+  const later = forward && lead.txid && !deposits.some((d) => d.txid === lead.txid) ? lead.txid : null;
+  const paid = forward ? "Paid to" : "Paid from";
+  const amountText = (d: Deposit) => {
+    const c = onChain.get(d.txid);
+    return c !== undefined
+      ? `${paid.toLowerCase()} this address ${formatBtc(c, 8)} BTC, traced share ${formatBtc(d.traced, 8)} BTC (${formatShare(d.traced, c)})`
+      : `traced share ${formatBtc(d.traced, 8)} BTC`;
+  };
 
   const text = [
     "ChainTrail trace summary. This is a lead, not proof: check it before acting on it.",
@@ -84,15 +117,21 @@ export function RequestBlock({ view, node, lead }: { view: TraceView; node: Grap
     ...claim.evidence.map((e) => `  - ${e}`),
     ...(claim.url ? [`Source: ${claim.url}${claim.asOf ? ` (as of ${claim.asOf})` : ""}`] : []),
     ...(address ? [`${forward ? "Deposit address" : "Sending address"}: ${address}`] : []),
-    `Transaction: ${edge.txid} (${formatUtc(edge.time)})`,
-    ...(onChain !== null
-      ? [`${forward ? "Paid to" : "Paid from"} this address in that transaction: ${formatBtc(onChain, 8)} BTC`]
-      : []),
-    `Traced share: ${formatBtc(edge.amount, 8)} BTC${onChain ? ` (${formatShare(edge.amount, onChain)} of that payment)` : ""}, ${formatShare(edge.amount, r.seed_amount)} of the traced amount`,
+    deposits.length === 1
+      ? `Transaction: ${single!.txid} (${formatUtc(single!.time)}): ${amountText(single!)}`
+      : `Transactions (${deposits.length}, oldest first):`,
+    ...(deposits.length === 1 ? [] : deposits.map((d) => `  - ${d.txid} (${formatUtc(d.time)}): ${amountText(d)}`)),
+    `Traced total: ${formatBtc(tracedTotal, 8)} BTC, ${formatShare(tracedTotal, r.seed_amount)} of the traced amount`,
     ...(later ? [`The service then moved the funds in transaction ${later}`] : []),
     `Path (transactions from the start): ${lead.path.join(" -> ")}`,
     `Amounts follow the pro-rata rule: where funds were mixed, each output gets a share in proportion to value.`,
   ].join("\n");
+
+  const paidCell = (d: Deposit) => {
+    const c = onChain.get(d.txid);
+    if (c !== undefined) return <Btc sats={c} />;
+    return failed || deposits.indexOf(d) >= MAX_LOOKUPS ? "not loaded" : "loading…";
+  };
 
   return (
     <section className="request" aria-label="For a records request">
@@ -106,23 +145,38 @@ export function RequestBlock({ view, node, lead }: { view: TraceView; node: Grap
             </dd>
           </>
         )}
-        <dt>Transaction</dt>
-        <dd>
-          <Id value={edge.txid} short href={href({ page: "tx", txid: edge.txid })} />
-        </dd>
-        <dt>Time</dt>
-        <dd>{formatUtc(edge.time)}</dd>
-        {address && (
+        {single ? (
           <>
-            <dt>{forward ? "Paid to this address" : "Paid from this address"}</dt>
-            <dd>{onChain !== null ? <Btc sats={onChain} /> : failed ? "could not be loaded" : "loading…"}</dd>
+            <dt>Transaction</dt>
+            <dd>
+              <Id value={single.txid} short href={href({ page: "tx", txid: single.txid })} />
+            </dd>
+            <dt>Time</dt>
+            <dd>{formatUtc(single.time)}</dd>
+            {address && (
+              <>
+                <dt>{paid} this address</dt>
+                <dd>{paidCell(single)}</dd>
+              </>
+            )}
+            <dt>Traced share</dt>
+            <dd>
+              <Btc sats={single.traced} />
+              {onChain.get(single.txid) ? (
+                <span className="muted small"> {formatShare(single.traced, onChain.get(single.txid)!)} of that payment</span>
+              ) : null}
+            </dd>
+          </>
+        ) : (
+          <>
+            <dt>Transactions</dt>
+            <dd>{deposits.length}, oldest first</dd>
+            <dt>Traced total</dt>
+            <dd>
+              <Btc sats={tracedTotal} />
+            </dd>
           </>
         )}
-        <dt>Traced share</dt>
-        <dd>
-          <Btc sats={edge.amount} />
-          {onChain ? <span className="muted small"> {formatShare(edge.amount, onChain)} of that payment</span> : null}
-        </dd>
         {later && (
           <>
             <dt>Then moved in</dt>
@@ -132,18 +186,46 @@ export function RequestBlock({ view, node, lead }: { view: TraceView; node: Grap
           </>
         )}
       </dl>
-      <button
-        type="button"
-        className="btn"
-        onClick={() =>
-          navigator.clipboard?.writeText(text).then(
-            () => setCopied(true),
-            () => setCopied(false),
-          )
-        }
-      >
-        {copied ? "Copied" : "Copy summary"}
-      </button>
+      {!single && (
+        <ol className="request-deposits" aria-label="Transactions">
+          {(all ? deposits : deposits.slice(0, SHOWN)).map((d) => (
+            <li key={d.txid}>
+              <div className="request-deposit-head">
+                <span>{formatUtc(d.time)}</span>
+                <Id value={d.txid} short href={href({ page: "tx", txid: d.txid })} />
+              </div>
+              <div className="small">
+                {address && (
+                  <>
+                    {paid} address {paidCell(d)}
+                    {" · "}
+                  </>
+                )}
+                traced <Btc sats={d.traced} />
+              </div>
+            </li>
+          ))}
+        </ol>
+      )}
+      <div className="request-actions">
+        {!single && deposits.length > SHOWN && (
+          <button type="button" className="btn subtle" onClick={() => setAll((a) => !a)}>
+            {all ? "Show fewer" : `Show all ${deposits.length}`}
+          </button>
+        )}
+        <button
+          type="button"
+          className="btn"
+          onClick={() =>
+            navigator.clipboard?.writeText(text).then(
+              () => setCopied(true),
+              () => setCopied(false),
+            )
+          }
+        >
+          {copied ? "Copied" : deposits.length > 1 ? `Copy summary (all ${deposits.length})` : "Copy summary"}
+        </button>
+      </div>
     </section>
   );
 }

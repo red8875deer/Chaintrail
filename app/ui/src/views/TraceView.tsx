@@ -9,9 +9,12 @@ import { type GraphControls, GraphCanvas, type Selection } from "../components/G
 import { LeadsPanel } from "../components/LeadsPanel";
 import { Legend } from "../components/Legend";
 import { exportCsv, exportJson, exportPng } from "../lib/export";
-import { extractId, formatBtc, formatElapsed, formatInt, parseBtc, shortSeed } from "../lib/format";
+import { extractId, formatBtc, formatElapsed, formatInt, looksLikeAddress, parseBtc, shortSeed } from "../lib/format";
 import { buildDisplay, defaultMinShareBp, displayPath, isGroupId, leadPath, leadSpine, nodeForLead } from "../lib/graph";
 import { DEFAULT_MAX_HOPS, DEFAULT_MAX_TXS, type TraceParams, href, parseRoute, sameTrace } from "../lib/route";
+
+/** Graphs with more addresses than this show "Arranging…" before a redraw. */
+const BIG_VIEW = 300;
 
 function plural(n: number, one: string, many = `${one}s`): string {
   return `${n} ${n === 1 ? one : many}`;
@@ -52,7 +55,10 @@ function fromParams(p: TraceParams | null): FormState {
 function toRequest(f: FormState): TraceRequest | string {
   // Explorer links are accepted: the transaction id is taken from them.
   const txid = extractId(f.txid);
-  if (!/^[0-9a-fA-F]{64}$/.test(txid)) return "Enter a transaction id: 64 characters, 0–9 and a–f.";
+  if (!/^[0-9a-fA-F]{64}$/.test(txid))
+    return looksLikeAddress(txid)
+      ? "That is an address, not a transaction id. Look it up with the search at the top to see its transactions, then trace one of them (or put the address in “or paid to address”)."
+      : "Enter a transaction id: 64 characters, 0–9 and a–f.";
   if (f.vout.trim() && f.to.trim()) return "Fill in either the output number or the recipient address, not both.";
   if (f.vout.trim() && !/^\d+$/.test(f.vout.trim())) return "The output number must be a whole number (0, 1, 2…).";
   if (f.vout.trim() && Number(f.vout.trim()) > 4_294_967_295) return "That output number is too large.";
@@ -98,13 +104,30 @@ export function TraceView({ params }: { params: TraceParams | null }) {
   const [hideBp, setHideBp] = useState(0);
   // The slider moves freely; the graph follows once it settles (each change re-lays out).
   const [sliderBp, setSliderBp] = useState(0);
+  // Redrawing a big graph blocks the page for a moment: say so first, then do it.
+  const [busy, setBusy] = useState(false);
+  const bigRef = useRef(false);
+  bigRef.current = (view?.graph.nodes.length ?? 0) > BIG_VIEW;
+  const heavy = useCallback((apply: () => void) => {
+    if (!bigRef.current) return apply();
+    setBusy(true);
+    requestAnimationFrame(() =>
+      setTimeout(() => {
+        apply();
+        setBusy(false);
+      }, 0),
+    );
+  }, []);
   useEffect(() => setSliderBp(hideBp), [hideBp]);
   useEffect(() => {
     if (sliderBp === hideBp) return;
-    const t = setTimeout(() => setHideBp(sliderBp), 250);
+    const t = setTimeout(() => heavy(() => setHideBp(sliderBp)), 250);
     return () => clearTimeout(t);
-  }, [sliderBp, hideBp]);
+  }, [sliderBp, hideBp, heavy]);
   const [simplify, setSimplify] = useState(true);
+  /** The checkbox follows the click at once; the graph follows `simplify`. */
+  const [simplifyBox, setSimplifyBox] = useState(true);
+  useEffect(() => setSimplifyBox(simplify), [simplify]);
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
   const [noteClosed, setNoteClosed] = useState(false);
   /** Nodes to bring into view after the graph changes (e.g. an opened group). */
@@ -371,6 +394,7 @@ export function TraceView({ params }: { params: TraceParams | null }) {
                     }
                   }}
                   controls={controls}
+                  busy={busy}
                 />
               )}
               <Legend view={view} />
@@ -383,7 +407,7 @@ export function TraceView({ params }: { params: TraceParams | null }) {
                     {display.hidden > 0 &&
                       `; ${formatInt(display.hidden)} with smaller flows ${display.hidden === 1 ? "is" : "are"} hidden (slider below)`}
                     {display.unlinked > 0 && `; ${formatInt(display.unlinked)} not linked to the start`}.
-                    {display.groups.size > 0 && " Groups and runs of addresses open on click."} Every lead is listed on the right.
+                    {display.groups.size > 0 && " Groups and runs of addresses open on click."} Every lead is listed with the results.
                   </p>
                   <button type="button" className="note-close" aria-label="Close this note" onClick={() => setNoteClosed(true)}>
                     ×
@@ -404,7 +428,15 @@ export function TraceView({ params }: { params: TraceParams | null }) {
                   />
                 </label>
                 <label title="Group many small branches and collapse long runs of plain addresses">
-                  <input type="checkbox" checked={simplify} onChange={(e) => setSimplify(e.target.checked)} />
+                  <input
+                    type="checkbox"
+                    checked={simplifyBox}
+                    onChange={(e) => {
+                      const on = e.target.checked;
+                      setSimplifyBox(on);
+                      heavy(() => setSimplify(on));
+                    }}
+                  />
                   Group small branches
                 </label>
                 <button type="button" className="btn subtle" onClick={() => controls.current?.fit()}>
@@ -432,6 +464,14 @@ export function TraceView({ params }: { params: TraceParams | null }) {
                 </p>
                 <ErrorBox error={error} />
               </div>
+            </div>
+          )}
+          {view && !running && display && display.elements.length === 0 && (
+            <div className="canvas-empty" role="status">
+              <p>
+                Nothing to draw at this setting: every flow is smaller than the “Hide flows under” share. Move the slider
+                left to show them.
+              </p>
             </div>
           )}
           {running && (

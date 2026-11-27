@@ -127,15 +127,28 @@ export function leadsCsv(view: TraceView): string {
   return [header, ...rows].map((row) => row.map(csvCell).join(",")).join("\r\n") + "\r\n";
 }
 
+/**
+ * A "#" comment line for the top of a CSV, kept to one unquoted cell: spreadsheet programs
+ * show it as written, and tools that skip "#" lines skip it. Digit grouping is dropped and
+ * other commas become semicolons.
+ */
+export function csvComment(text: string): string {
+  return `# ${text
+    .replace(/(\d),(?=\d{3}\b)/g, "$1")
+    .replace(/,/g, ";")
+    .replace(/"/g, "'")
+    .replace(/[\r\n]+/g, " ")}`;
+}
+
 /** The CSV with a few "#" lines of provenance before the header row. */
 export function leadsCsvWithProvenance(view: TraceView, meta: Provenance): string {
   const lines = [
-    `# ChainTrail leads export, generated ${meta.generated_at}${meta.app_version ? `, app ${meta.app_version}` : ""}`,
-    `# Trace: ${meta.settings}`,
-    `# Data: ${meta.data_source ?? "unknown source"}${meta.label_data ? `; labels: ${meta.label_data.packs} packs, ${meta.label_data.labelled_addresses} addresses` : ""}`,
-    ...meta.notes.map((n) => `# ${n}`),
+    `ChainTrail leads export; generated ${meta.generated_at}${meta.app_version ? `; app ${meta.app_version}` : ""}`,
+    `Trace: ${meta.settings}`,
+    `Data: ${meta.data_source ?? "unknown source"}${meta.label_data ? `; labels: ${meta.label_data.packs} packs; ${meta.label_data.labelled_addresses} addresses` : ""}`,
+    ...meta.notes,
   ];
-  return lines.map((l) => csvCell(l)).join("\r\n") + "\r\n" + leadsCsv(view);
+  return lines.map(csvComment).join("\r\n") + "\r\n" + leadsCsv(view);
 }
 
 export function exportCsv(view: TraceView) {

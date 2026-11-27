@@ -9,7 +9,7 @@
 import { type KeyboardEvent, type RefObject, useEffect, useRef, useState } from "react";
 import cytoscape, { type Core, type EdgeSingular, type Position } from "cytoscape";
 import dagre from "cytoscape-dagre";
-import { type Display, type Palette, graphStyle } from "../lib/graph";
+import { type Display, type Palette, graphStyle, labelWidth } from "../lib/graph";
 import type { NodeStyleKey } from "../lib/meaning";
 import { NODE_STYLES } from "../lib/meaning";
 
@@ -103,19 +103,21 @@ function view(cy: Core, eles: Eles, focus: Eles | null, animate: boolean, overvi
       !f || (f.x1 >= x - halfW && f.x2 <= x + halfW && f.y1 >= y - halfH && f.y2 <= y + halfH);
     cy.nodes(".seed").forEach((n) => {
       const b = n.boundingBox({ includeLabels: true });
-      const fix = (lo: number, hi: number, c: number, half: number, other: number, horizontal: boolean) => {
-        const v1 = c - half;
-        const v2 = c + half;
-        const cutLow = lo < v1 && hi > v1;
-        const cutHigh = hi > v2 && lo < v2;
+      // Cut: it crosses the canvas edge. Brought in, it clears the padding; moved out, it
+      // clears the canvas edge.
+      const fix = (lo: number, hi: number, c: number, half: number, padLo: number, padHi: number, other: number, horizontal: boolean) => {
+        const edgeLo = c - half - padLo / zoom;
+        const edgeHi = c + half + padHi / zoom;
+        const cutLow = lo < edgeLo && hi > edgeLo;
+        const cutHigh = hi > edgeHi && lo < edgeHi;
         if (!cutLow && !cutHigh) return c;
-        const inside = cutLow ? c - (v1 - lo) - m : c + (hi - v2) + m;
-        const outside = cutLow ? c + (hi - v1) + m : c - (v2 - lo) - m;
+        const inside = cutLow ? lo - m + half : hi + m - half;
+        const outside = cutLow ? hi + m + half + padLo / zoom : lo - m - half - padHi / zoom;
         const ok = (x: number) => (horizontal ? keeps(x, other) : keeps(other, x));
         return ok(inside) ? inside : ok(outside) ? outside : c;
       };
-      cx = fix(b.x1, b.x2, cx, halfW, cy_, true);
-      cy_ = fix(b.y1, b.y2, cy_, halfH, cx, false);
+      cx = fix(b.x1, b.x2, cx, halfW, PAD.left, PAD.right, cy_, true);
+      cy_ = fix(b.y1, b.y2, cy_, halfH, PAD.top, PAD.bottom, cx, false);
     });
   }
   const pan = { x: PAD.left + w / 2 - zoom * cx, y: PAD.top + h / 2 - zoom * cy_ };
@@ -174,7 +176,7 @@ function routeAroundNodes(cy: Core) {
     const t = e.target().position();
     const mid = ctrl ? { x: (s.x + 2 * ctrl.x + t.x) / 4, y: (s.y + 2 * ctrl.y + t.y) / 4 } : { x: (s.x + t.x) / 2, y: (s.y + t.y) / 2 };
     const a = Math.atan2(t.y - s.y, t.x - s.x);
-    const w = label.length * 7.4 + 6;
+    const w = labelWidth(label);
     const h = 18;
     const hw = (w * Math.abs(Math.cos(a)) + h * Math.abs(Math.sin(a))) / 2;
     const hh = (w * Math.abs(Math.sin(a)) + h * Math.abs(Math.cos(a))) / 2;
@@ -182,17 +184,20 @@ function routeAroundNodes(cy: Core) {
     return { x1: mid.x - hw, x2: mid.x + hw, y1: cy_ - hh, y2: cy_ + hh };
   };
 
-  const blocked = (e: EdgeSingular, ctrl: Position | null) => {
+  /** How badly a route collides: the amount over a node or another amount counts most, then
+   * each point of the line inside a node or label. Stops counting at `limit`. */
+  const cost = (e: EdgeSingular, ctrl: Position | null, limit = Infinity) => {
     const s = e.source().position();
     const t = e.target().position();
     const own = [e.source().id(), e.target().id()];
     const ownLabels = own.map((id) => labels.get(id)!).filter(Boolean);
     const lb = labelBox(e, ctrl);
+    let c = 0;
     if (lb) {
-      if (bodies.within(lb).some((b) => !own.includes(b.item))) return true;
-      if (placed.within(lb).length > 0) return true;
+      c += 20 * bodies.within(lb).filter((b) => !own.includes(b.item)).length;
+      c += 20 * placed.within(lb).length;
     }
-    for (let k = 3; k <= 57; k++) {
+    for (let k = 3; k <= 57 && c < limit; k++) {
       const u = k / 60;
       const p = ctrl
         ? {
@@ -201,10 +206,10 @@ function routeAroundNodes(cy: Core) {
           }
         : { x: s.x + (t.x - s.x) * u, y: s.y + (t.y - s.y) * u };
       // An edge may touch its own nodes, but not run through their labels.
-      if (ownLabels.some((b) => inside(p, b))) return true;
-      if (bodies.at(p).some((b) => !own.includes(b.item) && inside(p, b.box))) return true;
+      if (ownLabels.some((b) => inside(p, b))) c += 1;
+      if (bodies.at(p).some((b) => !own.includes(b.item) && inside(p, b.box))) c += 1;
     }
-    return false;
+    return c;
   };
 
   const edges = cy.edges().sort((a, b) => Number(b.data("amount") ?? 0) - Number(a.data("amount") ?? 0));
@@ -221,23 +226,29 @@ function routeAroundNodes(cy: Core) {
   edges.forEach((e) => {
     if (e.isLoop() || e.hasClass("fan-in") || e.hasClass("fan-out")) return;
     let ctrl: Position | null = null;
-    if (blocked(e, null)) {
+    let best = cost(e, null);
+    if (best > 0) {
       const s = e.source().position();
       const t = e.target().position();
       const len = Math.hypot(t.x - s.x, t.y - s.y) || 1;
       const nx = -(t.y - s.y) / len;
       const ny = (t.x - s.x) / len;
       const mid = { x: (s.x + t.x) / 2, y: (s.y + t.y) / 2 };
+      // The first clear curve, else the one that collides least (gentler curves win ties).
+      let bend = 0;
       for (const c of [50, -50, 90, -90, 140, -140, 200, -200, 270, -270]) {
         const p = { x: mid.x + nx * c, y: mid.y + ny * c };
-        if (!blocked(e, p)) {
+        const k = cost(e, p, best);
+        if (k < best) {
+          best = k;
+          bend = c;
           ctrl = p;
-          // Same sign convention as Cytoscape: distance along the left-hand normal of
-          // source→target (checked in the browser).
-          e.style({ "curve-style": "unbundled-bezier", "control-point-distances": c, "control-point-weights": 0.5 });
-          break;
+          if (k === 0) break;
         }
       }
+      // Same sign convention as Cytoscape: distance along the left-hand normal of
+      // source→target (checked in the browser).
+      if (ctrl) e.style({ "curve-style": "unbundled-bezier", "control-point-distances": bend, "control-point-weights": 0.5 });
     }
     const lb = labelBox(e, ctrl);
     if (lb) placed.add(lb, null);
@@ -373,6 +384,7 @@ export function GraphCanvas({
   selected,
   onSelect,
   controls,
+  busy = false,
 }: {
   display: Display;
   /** Displayed ids on the selected lead's path. */
@@ -384,6 +396,8 @@ export function GraphCanvas({
   selected: Selection;
   onSelect: (s: Selection) => void;
   controls: RefObject<GraphControls | null>;
+  /** Work on the graph is about to block the page: show that it is being arranged. */
+  busy?: boolean;
 }) {
   const host = useRef<HTMLDivElement>(null);
   const cyRef = useRef<Core | null>(null);
@@ -687,7 +701,7 @@ export function GraphCanvas({
       <div className="sr-only" aria-live="polite">
         {said}
       </div>
-      {arranging && (
+      {(arranging || busy) && (
         <div className="arranging" role="status">
           Arranging the graph…
         </div>

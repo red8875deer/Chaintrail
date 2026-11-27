@@ -132,6 +132,13 @@ export function shortId(id: string, head = 8, tail = 6): string {
   return `${id.slice(0, head)}…${id.slice(-tail)}`;
 }
 
+/** Text that looks like a Bitcoin address (and is not a 64-character transaction id). */
+export function looksLikeAddress(text: string): boolean {
+  const t = text.trim();
+  if (/^[0-9a-fA-F]{64}$/.test(t)) return false;
+  return /^(bc1|tb1|bcrt1)[02-9ac-hj-np-z]{8,87}$/i.test(t) || /^[123mn][1-9A-HJ-NP-Za-km-z]{25,34}$/.test(t);
+}
+
 /** A trace seed ("txid", "txid:vout", "txid → address") with its ids shortened. */
 export function shortSeed(seed: string): string {
   return seed

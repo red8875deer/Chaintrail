@@ -1170,8 +1170,30 @@ table.ledger a:hover,
   min-width: 0;
   overflow-wrap: anywhere;
 }
-.request .btn {
-  justify-self: start;
+.request-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.request-deposits {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  font-size: 0.86rem;
+}
+.request-deposits li {
+  padding: 6px 0;
+  border-top: 1px solid var(--rule);
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+.request-deposit-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  align-items: baseline;
 }
 
 /* Lead amounts that are a pro-rata share after mixing (not an on-chain fact). */

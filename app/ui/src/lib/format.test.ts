@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { btcParts, formatBtc, formatBtcShort, formatShare, parseBtc, shortId, csvCell } from "./format";
+import { btcParts, formatBtc, formatBtcShort, formatShare, looksLikeAddress, parseBtc, shortId, shortSeed, csvCell } from "./format";
 
 describe("BTC formatting (integer maths only)", () => {
   it("formats sats exactly", () => {
@@ -67,5 +67,24 @@ describe("csvCell", () => {
     expect(csvCell("@cmd")).toBe("'@cmd");
     expect(csvCell("Zürich, CH")).toBe('"Zürich, CH"');
     expect(csvCell(-5)).toBe("-5");
+  });
+});
+
+describe("looksLikeAddress", () => {
+  it("tells addresses from transaction ids", () => {
+    expect(looksLikeAddress("1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2")).toBe(true);
+    expect(looksLikeAddress("3J98t1WpEZ73CNmQviecrnyiWrnqRhWNLy")).toBe(true);
+    expect(looksLikeAddress("bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq")).toBe(true);
+    expect(looksLikeAddress("3f036ff88bb851b57a1e28780dbce35a6457a8b57995c095b55b3b0cf48ba9fd")).toBe(false);
+    expect(looksLikeAddress("1f036ff88bb851b57a1e28780dbce35a6457a8b57995c095b55b3b0cf48ba9fd")).toBe(false);
+    expect(looksLikeAddress("not an id")).toBe(false);
+  });
+});
+
+describe("shortSeed", () => {
+  it("shortens the ids in a trace seed", () => {
+    const tx = "fc78327d4e46dac01dc313067b1ac7f274cdb3a07ea9f28f6f71473145f1b264";
+    expect(shortSeed(`${tx}:1`)).toBe("fc78327d…f1b264:1");
+    expect(shortSeed(`${tx} → bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq`)).toBe("fc78327d…f1b264 → bc1qar0s…zwf5mdq".replace("zwf5mdq", "wf5mdq"));
   });
 });
