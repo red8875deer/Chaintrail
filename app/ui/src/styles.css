@@ -1141,3 +1141,33 @@ table.ledger a:hover,
   grid-auto-rows: max-content;
   align-content: start;
 }
+
+/* Records-request block in the details of an endpoint. */
+.request {
+  border-top: 1px solid var(--rule);
+  padding-top: 10px;
+  display: grid;
+  gap: 8px;
+}
+.request h4 {
+  margin: 0;
+  font-size: 0.9rem;
+}
+.request-list {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 4px 12px;
+  margin: 0;
+  font-size: 0.88rem;
+}
+.request-list dt {
+  color: var(--muted);
+}
+.request-list dd {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.request .btn {
+  justify-self: start;
+}

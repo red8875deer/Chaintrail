@@ -7,6 +7,7 @@ import { type Display, edgeById, isGroupId, leadPath, nodeById, nodeForLead } fr
 import { categoryName, describeClaim, leadKindExplanation, leadKindName, roleText } from "../lib/meaning";
 import { type TraceParams, href } from "../lib/route";
 import { Basis, Btc, CategoryTag, Id, Meter } from "./bits";
+import { RequestBlock, useOnChainAmount } from "./RequestBlock";
 import type { Selection } from "./GraphCanvas";
 
 function ClaimExplained({ claim }: { claim: Claim }) {
@@ -201,9 +202,20 @@ function DetailsBody({
   if (selection?.type === "edge") {
     const e = edgeById(view, selection.id);
     if (!e) return null;
-    const from = nodeById(view, e.source);
-    const to = nodeById(view, e.target);
-    return (
+    return <EdgeDetails view={view} edgeId={e.id} onClose={onClose} />;
+  }
+
+  return <NodeDetails view={view} selection={selection} selectedLead={selectedLead} onClose={onClose} />;
+}
+
+function EdgeDetails({ view, edgeId, onClose }: { view: TraceView; edgeId: string; onClose: () => void }) {
+  const r = view.report;
+  const e = edgeById(view, edgeId)!;
+  const from = nodeById(view, e.source);
+  const to = nodeById(view, e.target);
+  // The whole on-chain payment this traced share is part of.
+  const whole = useOnChainAmount(e.txid, to?.address ?? null, "to");
+  return (
       <section className="details" aria-label="Selected flow">
         <div className="details-head">
           <h3>Funds moved</h3>
@@ -214,6 +226,13 @@ function DetailsBody({
         <p>
           <Btc sats={e.amount} /> <span className="muted small">{formatShare(e.amount, r.seed_amount)} of the traced amount</span>
         </p>
+        {whole.amount !== null && whole.amount > 0 && (
+          <p className="small">
+            The transaction paid <Btc sats={whole.amount} /> to this address; the traced share is{" "}
+            {formatShare(e.amount, whole.amount)} of it
+            {e.amount < whole.amount ? " (the rest came from other funds mixed in this transaction)." : "."}
+          </p>
+        )}
         <p className="small">
           From <span className="mono">{from?.label ?? e.source}</span> to{" "}
           <span className="mono">{to?.label ?? e.target}</span>
@@ -228,13 +247,22 @@ function DetailsBody({
         <p className="small">
           Transaction <Id value={e.txid} short href={href({ page: "tx", txid: e.txid })} />
         </p>
-        <p className="muted small">
-          The amount is the traced share of this transfer, not necessarily the whole transfer.
-        </p>
       </section>
     );
-  }
+}
 
+function NodeDetails({
+  view,
+  selection,
+  selectedLead,
+  onClose,
+}: {
+  view: TraceView;
+  selection: Selection;
+  selectedLead: number | null;
+  onClose: () => void;
+}) {
+  const r = view.report;
   const node =
     selection?.type === "node"
       ? nodeById(view, selection.id)
@@ -311,6 +339,9 @@ function DetailsBody({
             </div>
           )}
         </div>
+      )}
+      {lead && lead.kind.kind === "endpoint" && lead.category !== "mixer" && (
+        <RequestBlock view={view} node={node} lead={lead} />
       )}
       {!lead && seen && <ClaimExplained claim={seen.claim} />}
       <dl className="facts" hidden={node.amount_in === 0 && node.amount_out === 0}>
