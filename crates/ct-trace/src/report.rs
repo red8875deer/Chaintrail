@@ -74,8 +74,14 @@ pub struct Lead {
     /// reaching it (forward) or just after leaving it (backward). Used to draw the graph.
     #[serde(default)]
     pub via: Option<Address>,
-    /// Transaction where the lead was found.
+    /// Transaction where the lead was found. For funds at rest and branches not followed:
+    /// the transaction that created the coin (`txid:vout`); for endpoints found by an
+    /// address: the transaction that paid it; for endpoints found by a transaction's shape
+    /// (CoinJoin, service sweep or payout): that transaction.
     pub txid: Option<String>,
+    /// Output of `txid` holding the funds, when the lead is one coin (at rest, not followed).
+    #[serde(default)]
+    pub vout: Option<u32>,
     /// Traced amount reaching this lead, in base units.
     pub amount: u64,
     /// Block time (Unix seconds) when funds first reached it.
@@ -115,6 +121,8 @@ pub struct Flow {
     pub from_coin: Option<String>,
     #[serde(default)]
     pub to_coin: Option<String>,
+    // A coin reference without ":vout" stands for a whole transaction (e.g. funds entering a
+    // CoinJoin, or leaving a service's payout): the graph draws it as the transaction.
     /// Traced amount on this edge (not the full output value), base units.
     pub amount: u64,
     pub role: FlowRole,

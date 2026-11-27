@@ -10,6 +10,7 @@ use std::collections::HashMap;
 use ct_core::{
     Address, AddressSummary, Chain, Claim, Confidence, EntityCategory, Label, OutputSpend, UtxoTx,
 };
+use ct_heuristics::btc::coinjoin::is_standard_denomination;
 use ct_heuristics::btc::dormancy::SAMPLE_INPUTS;
 use ct_heuristics::btc::{
     Dormancy, TxShape, classify, detect_change, dormancy, is_peel_step, service_from_summary,
@@ -67,6 +68,7 @@ pub async fn trace_bitcoin(
         txs: HashMap::new(),
         spends: HashMap::new(),
         summaries: HashMap::new(),
+        samples: HashMap::new(),
         leads: Vec::new(),
         lead_index: HashMap::new(),
         flows: Vec::new(),
@@ -129,6 +131,14 @@ pub async fn trace_bitcoin(
         })
         .collect();
 
+    // A label on the start address is reported too (it never stops the trace there).
+    for (_, address, _) in &seed_outputs {
+        if let Some(a) = address
+            && let Some(l) = labels.lookup(a)
+        {
+            t.saw_label(l);
+        }
+    }
     match config.direction {
         Direction::Forward => {
             let coins = seed_outputs
@@ -146,16 +156,26 @@ pub async fn trace_bitcoin(
             t.forward(coins, min_amount, progress).await;
         }
         Direction::Backward => {
-            let receiver = seed_outputs.first().and_then(|(_, a, _)| a.clone());
-            let receiver_coin = seed_outputs
-                .first()
-                .map(|(vout, _, _)| format!("{}:{vout}", seed_tx.txid));
+            // A whole transaction is traced back as one receiver: the transaction itself.
+            let receivers = match &seed {
+                Seed::Tx { .. } => vec![Receiver {
+                    address: None,
+                    coin: Some(seed_tx.txid.clone()),
+                    amount: seed_amount,
+                }],
+                _ => seed_outputs
+                    .iter()
+                    .map(|(vout, address, value)| Receiver {
+                        address: address.clone(),
+                        coin: Some(format!("{}:{vout}", seed_tx.txid)),
+                        amount: *value,
+                    })
+                    .collect(),
+            };
             let source = Source {
                 txid: seed_tx.txid.clone(),
-                amount: seed_amount,
                 hop: 0,
-                receiver,
-                receiver_coin,
+                receivers,
                 path: vec![seed_tx.txid.clone()],
             };
             t.backward(vec![source], min_amount, progress).await;
@@ -191,17 +211,36 @@ struct Coin {
     path: Vec<String>,
 }
 
-/// A traced amount to explain by the inputs of `txid` (backward).
+/// Traced funds received by one output, whose origin is followed backward.
+#[derive(Debug, Clone)]
+struct Receiver {
+    address: Option<Address>,
+    /// `txid:vout` of that output, or a bare txid when the receiver is a whole transaction
+    /// (a backward trace of every input of a transaction).
+    coin: Option<String>,
+    amount: u64,
+}
+
+impl Receiver {
+    fn vout(&self) -> Option<u32> {
+        self.coin.as_ref()?.rsplit_once(':')?.1.parse().ok()
+    }
+}
+
+/// A transaction whose inputs funded traced outputs (backward). The outputs it funded are
+/// kept apart, so each one is credited only with what it received.
 #[derive(Debug, Clone)]
 struct Source {
     txid: String,
-    amount: u64,
     hop: u32,
-    /// Address that received the traced funds in `txid`.
-    receiver: Option<Address>,
-    /// The output (`txid:vout`) that received them.
-    receiver_coin: Option<String>,
+    receivers: Vec<Receiver>,
     path: Vec<String>,
+}
+
+impl Source {
+    fn amount(&self) -> u64 {
+        self.receivers.iter().map(|r| r.amount).sum()
+    }
 }
 
 struct Tracer<'a> {
@@ -211,6 +250,8 @@ struct Tracer<'a> {
     txs: HashMap<String, UtxoTx>,
     spends: HashMap<String, Vec<OutputSpend>>,
     summaries: HashMap<Address, Option<AddressSummary>>,
+    /// Transactions fetched only to look at, outside the trace's budget (`sample_tx`).
+    samples: HashMap<String, UtxoTx>,
     leads: Vec<Lead>,
     lead_index: HashMap<String, usize>,
     flows: Vec<Flow>,
@@ -274,6 +315,21 @@ impl<'a> Tracer<'a> {
         self.stats.txs_examined += 1;
         self.txs.insert(txid.to_string(), tx.clone());
         Ok(tx)
+    }
+
+    /// A transaction fetched only to look at (e.g. the age of a consolidation's inputs). It
+    /// does not use the trace's transaction budget, which is for following funds; it has
+    /// its own allowance of the same size.
+    async fn sample_tx(&mut self, txid: &str) -> Option<UtxoTx> {
+        if let Some(t) = self.txs.get(txid).or_else(|| self.samples.get(txid)) {
+            return Some(t.clone());
+        }
+        if self.samples.len() as u32 >= self.config.max_txs {
+            return None;
+        }
+        let t = self.provider.tx(txid).await.ok()?;
+        self.samples.insert(txid.to_string(), t.clone());
+        Some(t)
     }
 
     fn budget_left(&self, txid: &str) -> bool {
@@ -374,16 +430,54 @@ impl<'a> Tracer<'a> {
         }
         let mut created = Vec::new();
         for p in prevs {
-            if !self.budget_left(&p) {
-                break;
-            }
-            if let Ok(prev) = self.tx(&p).await
+            if let Some(prev) = self.sample_tx(&p).await
                 && let Some(b) = prev.block
             {
                 created.push(b.time);
             }
         }
         dormancy(spend_time, &created)
+    }
+
+    /// Whether a consolidation merges coins fresh out of CoinJoins: most inputs use standard
+    /// CoinJoin amounts and most sampled inputs were created by CoinJoin transactions.
+    /// Returns (standard inputs, sampled inputs from CoinJoins, inputs sampled).
+    async fn postmix_evidence(&mut self, tx: &UtxoTx) -> Option<(usize, usize, usize)> {
+        let standard = tx
+            .inputs
+            .iter()
+            .filter(|i| is_standard_denomination(i.value))
+            .count();
+        if tx.inputs.len() < 5 || standard * 10 < tx.inputs.len() * 8 {
+            return None;
+        }
+        let mut inputs: Vec<_> = tx.inputs.iter().filter(|i| i.prev_txid.is_some()).collect();
+        inputs.sort_by_key(|i| std::cmp::Reverse(i.value));
+        let mut prevs: Vec<String> = Vec::new();
+        for i in inputs {
+            let p = i.prev_txid.clone().expect("filtered");
+            if !prevs.contains(&p) {
+                prevs.push(p);
+            }
+            if prevs.len() == SAMPLE_INPUTS {
+                break;
+            }
+        }
+        let mut sampled = 0;
+        let mut from_coinjoins = 0;
+        for p in prevs {
+            if let Some(prev) = self.sample_tx(&p).await {
+                sampled += 1;
+                if matches!(classify(&prev), TxShape::CoinJoin(_)) {
+                    from_coinjoins += 1;
+                }
+            }
+        }
+        (sampled >= 2 && from_coinjoins * 10 >= sampled * 6).then_some((
+            standard,
+            from_coinjoins,
+            sampled,
+        ))
     }
 
     /// The service confidence of a transaction shape, unless it is a consolidation of
@@ -400,6 +494,22 @@ impl<'a> Tracer<'a> {
         else {
             return (None, None);
         };
+        // Coins straight out of CoinJoins (standard amounts, created by CoinJoin rounds)
+        // swept together: one user merging their mixed coins, where the trail continues,
+        // not a service sweeping deposits. Round amounts alone are not enough: ordinary
+        // deposits are often round too.
+        if matches!(shape, TxShape::Consolidation { .. })
+            && let Some((standard, from_coinjoins, sampled)) = self.postmix_evidence(tx).await
+        {
+            return (
+                None,
+                Some(format!(
+                    "{}; {standard} of {} inputs are standard CoinJoin amounts and {from_coinjoins} of {sampled} sampled inputs came out of CoinJoins: treated as one user merging mixed coins, not a service",
+                    shape.describe(),
+                    tx.inputs.len()
+                )),
+            );
+        }
         if matches!(shape, TxShape::Consolidation { .. })
             && let Some(d) = self.consolidation_dormancy(tx).await
             && d.mostly_dormant()
@@ -499,6 +609,7 @@ impl<'a> Tracer<'a> {
         category: Option<EntityCategory>,
         address: Option<Address>,
         txid: Option<String>,
+        vout: Option<u32>,
         amount: u64,
         time: Option<u64>,
         hops: u32,
@@ -516,7 +627,12 @@ impl<'a> Tracer<'a> {
             (None, Some(t)) => t.clone(),
             (None, None) => String::new(),
         };
-        let key = format!("{tag}|{place}|{title}");
+        // Branches not followed stay one lead per coin, so each can be picked up exactly.
+        let coin = match (&kind, &txid, vout) {
+            (LeadKind::Unexplored { .. }, Some(t), Some(v)) => format!("{t}:{v}"),
+            _ => String::new(),
+        };
+        let key = format!("{tag}|{place}|{title}|{coin}");
         if let Some(&i) = self.lead_index.get(&key) {
             let lead = &mut self.leads[i];
             lead.amount += amount;
@@ -535,6 +651,7 @@ impl<'a> Tracer<'a> {
             address,
             via: self.via.clone(),
             txid,
+            vout,
             amount,
             first_time: time,
             hops,
@@ -546,12 +663,15 @@ impl<'a> Tracer<'a> {
         });
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn unexplored(
         &mut self,
         stop: StopReason,
         address: Option<Address>,
         txid: &str,
+        vout: Option<u32>,
         amount: u64,
+        time: Option<u64>,
         hop: u32,
         path: &[String],
     ) {
@@ -569,8 +689,9 @@ impl<'a> Tracer<'a> {
             None,
             address,
             Some(txid.to_string()),
+            vout,
             amount,
-            None,
+            time,
             hop,
             Claim::Fact,
             path,
@@ -584,17 +705,37 @@ impl<'a> Tracer<'a> {
         progress: &mut (dyn FnMut(Progress) + Send),
     ) {
         let mut pending: HashMap<String, Coin> = HashMap::new();
-        let push = |pending: &mut HashMap<String, Coin>, c: Coin| {
-            pending
-                .entry(format!("{}:{}", c.txid, c.vout))
-                .and_modify(|e| {
+        // Fewest hops seen for each coin, with that route: a coin reached again by a longer
+        // route keeps its shortest one (hops and path always agree).
+        let mut best: HashMap<String, (u32, Vec<String>)> = HashMap::new();
+        let push = |pending: &mut HashMap<String, Coin>,
+                    best: &mut HashMap<String, (u32, Vec<String>)>,
+                    mut c: Coin| {
+            let key = format!("{}:{}", c.txid, c.vout);
+            match best.get(&key) {
+                Some((h, p)) if *h <= c.hop => {
+                    c.hop = *h;
+                    c.path = p.clone();
+                }
+                _ => {
+                    best.insert(key.clone(), (c.hop, c.path.clone()));
+                }
+            }
+            match pending.get_mut(&key) {
+                Some(e) => {
                     e.amount += c.amount;
-                    e.hop = e.hop.min(c.hop);
-                })
-                .or_insert(c);
+                    if c.hop < e.hop {
+                        e.hop = c.hop;
+                        e.path = c.path;
+                    }
+                }
+                None => {
+                    pending.insert(key, c);
+                }
+            }
         };
         for c in seeds {
-            push(&mut pending, c);
+            push(&mut pending, &mut best, c);
         }
 
         while let Some(coin) = pop_largest(&mut pending, |c| c.amount) {
@@ -618,6 +759,7 @@ impl<'a> Tracer<'a> {
                         Some(category),
                         Some(addr),
                         Some(coin.txid.clone()),
+                        None,
                         coin.amount,
                         coin.time,
                         coin.hop,
@@ -641,6 +783,7 @@ impl<'a> Tracer<'a> {
                     Some(category),
                     Some(addr),
                     Some(coin.txid.clone()),
+                    None,
                     coin.amount,
                     coin.time,
                     coin.hop,
@@ -656,7 +799,9 @@ impl<'a> Tracer<'a> {
                         StopReason::Error(e.to_string()),
                         coin.address.clone(),
                         &coin.txid,
+                        Some(coin.vout),
                         coin.amount,
+                        coin.time,
                         coin.hop,
                         &coin.path,
                     );
@@ -670,6 +815,7 @@ impl<'a> Tracer<'a> {
                     None,
                     coin.address.clone(),
                     Some(coin.txid.clone()),
+                    Some(coin.vout),
                     coin.amount,
                     coin.time,
                     coin.hop,
@@ -683,7 +829,9 @@ impl<'a> Tracer<'a> {
                     StopReason::HopLimit,
                     coin.address.clone(),
                     &coin.txid,
+                    Some(coin.vout),
                     coin.amount,
+                    coin.time,
                     coin.hop,
                     &coin.path,
                 );
@@ -694,7 +842,9 @@ impl<'a> Tracer<'a> {
                     StopReason::Budget,
                     coin.address.clone(),
                     &coin.txid,
+                    Some(coin.vout),
                     coin.amount,
+                    coin.time,
                     coin.hop,
                     &coin.path,
                 );
@@ -707,7 +857,9 @@ impl<'a> Tracer<'a> {
                         StopReason::Error(e.to_string()),
                         coin.address.clone(),
                         &coin.txid,
+                        Some(coin.vout),
                         coin.amount,
+                        coin.time,
                         coin.hop,
                         &coin.path,
                     );
@@ -729,16 +881,31 @@ impl<'a> Tracer<'a> {
                             l.address,
                             label_evidence(&l)
                         ));
-                        format!("Mixed in {}: {}", l.entity, info.kind.label())
+                        format!("Likely mixed in {}: {}", l.entity, info.kind.label())
                     }
-                    None => format!("Mixed in {}", info.kind.label()),
+                    None => format!("Likely mixed in {}", info.kind.label()),
                 };
+                // Each coin entering the CoinJoin gets its own edge to the transaction.
+                self.flows.push(Flow {
+                    txid: stx.txid.clone(),
+                    hop,
+                    time,
+                    from: coin.address.clone(),
+                    to: None,
+                    from_coin: Some(format!("{}:{}", coin.txid, coin.vout)),
+                    to_coin: Some(stx.txid.clone()),
+                    amount: coin.amount,
+                    role: FlowRole::Payment,
+                    peel: false,
+                    note: Some(shape.describe()),
+                });
                 self.add_lead(
                     LeadKind::Endpoint,
                     title,
                     Some(EntityCategory::Mixer),
                     None,
                     Some(stx.txid.clone()),
+                    None,
                     coin.amount,
                     time,
                     hop,
@@ -751,7 +918,10 @@ impl<'a> Tracer<'a> {
                 );
                 continue;
             }
-            let (service, dormant_note) = self.service_shape(&stx, &shape).await;
+            // Not for the seed coin: the user chose to trace from there (a scammer's address
+            // that sweeps many victims' payments is not a service).
+            let (service, dormant_note) =
+                at_start(coin.hop, self.service_shape(&stx, &shape).await, &shape);
             if let Some(conf) = service {
                 let what = match &shape {
                     TxShape::Consolidation {
@@ -768,7 +938,7 @@ impl<'a> Tracer<'a> {
                         let mut evidence = vec![shape.describe()];
                         evidence.extend(n.evidence);
                         (
-                            format!("{}: {what}", label_title(&n.label)),
+                            format!("Likely {}: {what}", label_title(&n.label)),
                             n.label.category,
                             Claim::Inference {
                                 heuristic: "label.same_wallet".into(),
@@ -794,6 +964,7 @@ impl<'a> Tracer<'a> {
                     Some(category),
                     coin.address.clone(),
                     Some(stx.txid.clone()),
+                    None,
                     coin.amount,
                     time,
                     hop,
@@ -842,6 +1013,7 @@ impl<'a> Tracer<'a> {
                 });
                 push(
                     &mut pending,
+                    &mut best,
                     Coin {
                         txid: stx.txid.clone(),
                         vout: o.index,
@@ -857,6 +1029,52 @@ impl<'a> Tracer<'a> {
         }
     }
 
+    /// One "not followed" lead per traced output of a source.
+    fn unexplored_receivers(&mut self, stop: StopReason, src: &Source) {
+        for r in &src.receivers {
+            self.via = r.address.clone();
+            self.unexplored(
+                stop.clone(),
+                r.address.clone(),
+                &src.txid,
+                r.vout(),
+                r.amount,
+                None,
+                src.hop,
+                &src.path,
+            );
+        }
+    }
+
+    /// Funds that came out of a transaction as a whole (a CoinJoin, a service payout): one
+    /// edge from the transaction to each traced output it funded.
+    fn flows_from_tx(
+        &mut self,
+        tx: &UtxoTx,
+        src: &Source,
+        time: Option<u64>,
+        note: Option<String>,
+    ) {
+        for r in &src.receivers {
+            if r.coin.as_deref() == Some(tx.txid.as_str()) {
+                continue; // the receiver is this transaction itself
+            }
+            self.flows.push(Flow {
+                txid: tx.txid.clone(),
+                hop: src.hop,
+                time,
+                from: None,
+                to: r.address.clone(),
+                from_coin: Some(tx.txid.clone()),
+                to_coin: r.coin.clone(),
+                amount: r.amount,
+                role: FlowRole::Source,
+                peel: false,
+                note: note.clone(),
+            });
+        }
+    }
+
     async fn backward(
         &mut self,
         seeds: Vec<Source>,
@@ -864,63 +1082,75 @@ impl<'a> Tracer<'a> {
         progress: &mut (dyn FnMut(Progress) + Send),
     ) {
         let mut pending: HashMap<String, Source> = HashMap::new();
-        let push = |pending: &mut HashMap<String, Source>, s: Source| {
-            pending
-                .entry(s.txid.clone())
-                .and_modify(|e| {
-                    e.amount += s.amount;
-                    e.hop = e.hop.min(s.hop);
-                })
-                .or_insert(s);
+        // Fewest hops seen for each transaction, with that route.
+        let mut best: HashMap<String, (u32, Vec<String>)> = HashMap::new();
+        let push = |pending: &mut HashMap<String, Source>,
+                    best: &mut HashMap<String, (u32, Vec<String>)>,
+                    mut s: Source| {
+            match best.get(&s.txid) {
+                Some((h, p)) if *h <= s.hop => {
+                    s.hop = *h;
+                    s.path = p.clone();
+                }
+                _ => {
+                    best.insert(s.txid.clone(), (s.hop, s.path.clone()));
+                }
+            }
+            match pending.get_mut(&s.txid) {
+                Some(e) => {
+                    for r in s.receivers {
+                        match e
+                            .receivers
+                            .iter_mut()
+                            .find(|x| x.coin == r.coin && x.address == r.address)
+                        {
+                            Some(x) => x.amount += r.amount,
+                            None => e.receivers.push(r),
+                        }
+                    }
+                    if s.hop < e.hop {
+                        e.hop = s.hop;
+                        e.path = s.path;
+                    }
+                }
+                None => {
+                    pending.insert(s.txid.clone(), s);
+                }
+            }
         };
         for s in seeds {
-            push(&mut pending, s);
+            push(&mut pending, &mut best, s);
         }
 
-        while let Some(src) = pop_largest(&mut pending, |s| s.amount) {
-            self.via = src.receiver.clone();
+        while let Some(src) = pop_largest(&mut pending, |s| s.amount()) {
+            self.via = src
+                .receivers
+                .iter()
+                .max_by_key(|r| r.amount)
+                .and_then(|r| r.address.clone());
             progress(Progress {
                 txs_examined: self.stats.txs_examined,
                 pending: pending.len(),
                 leads: self.leads.len(),
             });
-            if src.amount < min_amount {
-                self.stats.below_threshold += src.amount;
+            let amount = src.amount();
+            if amount < min_amount {
+                self.stats.below_threshold += amount;
                 continue;
             }
-            if src.hop > self.config.max_hops {
-                self.unexplored(
-                    StopReason::HopLimit,
-                    src.receiver.clone(),
-                    &src.txid,
-                    src.amount,
-                    src.hop,
-                    &src.path,
-                );
+            // Same limit as forward: funds are shown up to `max_hops` transactions away.
+            if src.hop >= self.config.max_hops {
+                self.unexplored_receivers(StopReason::HopLimit, &src);
                 continue;
             }
             if !self.budget_left(&src.txid) {
-                self.unexplored(
-                    StopReason::Budget,
-                    src.receiver.clone(),
-                    &src.txid,
-                    src.amount,
-                    src.hop,
-                    &src.path,
-                );
+                self.unexplored_receivers(StopReason::Budget, &src);
                 continue;
             }
             let tx = match self.tx(&src.txid).await {
                 Ok(t) => t,
                 Err(e) => {
-                    self.unexplored(
-                        StopReason::Error(e.to_string()),
-                        src.receiver.clone(),
-                        &src.txid,
-                        src.amount,
-                        src.hop,
-                        &src.path,
-                    );
+                    self.unexplored_receivers(StopReason::Error(e.to_string()), &src);
                     continue;
                 }
             };
@@ -933,18 +1163,22 @@ impl<'a> Tracer<'a> {
                         .as_ref()
                         .map(|b| b.height.to_string())
                         .unwrap_or_default();
-                    self.add_lead(
-                        LeadKind::Mined,
-                        format!("Newly mined coins (block {height})"),
-                        Some(EntityCategory::MiningPool),
-                        src.receiver.clone(),
-                        Some(tx.txid.clone()),
-                        src.amount,
-                        time,
-                        src.hop,
-                        Claim::Fact,
-                        &src.path,
-                    );
+                    for r in &src.receivers {
+                        self.via = r.address.clone();
+                        self.add_lead(
+                            LeadKind::Mined,
+                            format!("Newly mined coins (block {height})"),
+                            None,
+                            r.address.clone(),
+                            Some(tx.txid.clone()),
+                            r.vout(),
+                            r.amount,
+                            time,
+                            src.hop,
+                            Claim::Fact,
+                            &src.path,
+                        );
+                    }
                     continue;
                 }
                 TxShape::CoinJoin(info) => {
@@ -956,17 +1190,19 @@ impl<'a> Tracer<'a> {
                                 l.address,
                                 label_evidence(&l)
                             ));
-                            format!("Came out of {}: {}", l.entity, info.kind.label())
+                            format!("Likely came out of {}: {}", l.entity, info.kind.label())
                         }
-                        None => format!("Came out of {}", info.kind.label()),
+                        None => format!("Likely came out of {}", info.kind.label()),
                     };
+                    self.flows_from_tx(&tx, &src, time, Some(shape.describe()));
                     self.add_lead(
                         LeadKind::Endpoint,
                         title,
                         Some(EntityCategory::Mixer),
                         None,
                         Some(tx.txid.clone()),
-                        src.amount,
+                        None,
+                        amount,
                         time,
                         src.hop,
                         Claim::Inference {
@@ -980,18 +1216,22 @@ impl<'a> Tracer<'a> {
                 }
                 _ => {}
             }
+            // Not for the seed transaction: the user chose to trace back from there.
+            // A service payout is a stop even for the start transaction: that is where the
+            // funds came from.
             let (service, dormant_note) = self.service_shape(&tx, &shape).await;
             if let Some(conf) = service {
-                // Funds left a service wallet (withdrawal batch or swept hot wallet).
+                // Funds left a service wallet (withdrawal batch or swept hot wallet). The
+                // whole transaction is the service's: drawn as the transaction, not as one
+                // of its input addresses.
                 let what = format!("funds sent in a {}", shape.describe());
-                let (title, category, sender, claim) = match self.name_service(&tx, false) {
+                let (title, category, claim) = match self.name_service(&tx, false) {
                     Some(n) => {
                         let mut evidence = vec![shape.describe()];
                         evidence.extend(n.evidence);
                         (
-                            format!("{}: {what}", label_title(&n.label)),
+                            format!("Likely {}: {what}", label_title(&n.label)),
                             n.label.category,
-                            Some(n.label.address.clone()),
                             Claim::Inference {
                                 heuristic: "label.same_wallet".into(),
                                 confidence: n.confidence.min(conf),
@@ -1002,7 +1242,6 @@ impl<'a> Tracer<'a> {
                     None => (
                         format!("Likely service: {what}"),
                         EntityCategory::UnknownService,
-                        tx.input_addresses().first().map(|a| (*a).clone()),
                         Claim::Inference {
                             heuristic: "service.tx_shape".into(),
                             confidence: conf,
@@ -1010,13 +1249,15 @@ impl<'a> Tracer<'a> {
                         },
                     ),
                 };
+                self.flows_from_tx(&tx, &src, time, Some(shape.describe()));
                 self.add_lead(
                     LeadKind::Endpoint,
                     title,
                     Some(category),
-                    sender,
+                    None,
                     Some(tx.txid.clone()),
-                    src.amount,
+                    None,
+                    amount,
                     time,
                     src.hop,
                     claim,
@@ -1025,42 +1266,58 @@ impl<'a> Tracer<'a> {
                 continue;
             }
 
-            // Allocate pro-rata to inputs; remainder goes to the largest input so the
-            // amounts add up exactly.
+            // Allocate each traced output's amount pro-rata to the inputs (remainder to the
+            // largest input, so the amounts add up exactly), one edge per input and output.
             let total_in = tx.total_in().max(1) as u128;
-            let mut shares: Vec<u64> = tx
-                .inputs
-                .iter()
-                .map(|i| (src.amount as u128 * i.value as u128 / total_in) as u64)
-                .collect();
-            let remainder = src.amount - shares.iter().sum::<u64>();
-            if let Some(max_i) = (0..tx.inputs.len()).max_by_key(|&i| tx.inputs[i].value) {
-                shares[max_i] += remainder;
-            }
+            let largest = (0..tx.inputs.len()).max_by_key(|&i| tx.inputs[i].value);
+            let mut per_input = vec![0u64; tx.inputs.len()];
             let note =
                 dormant_note.or_else(|| (shape != TxShape::Simple).then(|| shape.describe()));
-            for (input, share) in tx.inputs.iter().zip(shares) {
+            for r in &src.receivers {
+                let mut shares: Vec<u64> = tx
+                    .inputs
+                    .iter()
+                    .map(|i| (r.amount as u128 * i.value as u128 / total_in) as u64)
+                    .collect();
+                let remainder = r.amount - shares.iter().sum::<u64>();
+                if let Some(m) = largest {
+                    shares[m] += remainder;
+                }
+                for (k, input) in tx.inputs.iter().enumerate() {
+                    let share = shares[k];
+                    if share == 0 {
+                        continue;
+                    }
+                    let Some(prev_txid) = &input.prev_txid else {
+                        continue;
+                    };
+                    self.flows.push(Flow {
+                        txid: tx.txid.clone(),
+                        hop: src.hop,
+                        time,
+                        from: input.address.clone(),
+                        to: r.address.clone(),
+                        from_coin: Some(format!("{prev_txid}:{}", input.prev_vout)),
+                        to_coin: r.coin.clone(),
+                        amount: share,
+                        role: FlowRole::Source,
+                        peel: false,
+                        note: note.clone(),
+                    });
+                    per_input[k] += share;
+                }
+            }
+            for (k, input) in tx.inputs.iter().enumerate() {
+                let share = per_input[k];
                 if share == 0 {
                     continue;
                 }
                 let Some(prev_txid) = input.prev_txid.clone() else {
                     continue;
                 };
-                self.flows.push(Flow {
-                    txid: tx.txid.clone(),
-                    hop: src.hop,
-                    time,
-                    from: input.address.clone(),
-                    to: src.receiver.clone(),
-                    from_coin: Some(format!("{prev_txid}:{}", input.prev_vout)),
-                    to_coin: src.receiver_coin.clone(),
-                    amount: share,
-                    role: FlowRole::Source,
-                    peel: false,
-                    note: note.clone(),
-                });
                 let mut path = src.path.clone();
                 path.push(prev_txid.clone());
+                self.via = input.address.clone();
                 if let Some(addr) = input.address.clone()
                     && let Some((title, category, claim)) = self.endpoint_for(&addr).await
                 {
@@ -1070,6 +1327,7 @@ impl<'a> Tracer<'a> {
                         Some(category),
                         Some(addr),
                         Some(prev_txid),
+                        None,
                         share,
                         time,
                         src.hop + 1,
@@ -1080,17 +1338,42 @@ impl<'a> Tracer<'a> {
                 }
                 push(
                     &mut pending,
+                    &mut best,
                     Source {
-                        receiver_coin: Some(format!("{prev_txid}:{}", input.prev_vout)),
-                        txid: prev_txid,
-                        amount: share,
+                        txid: prev_txid.clone(),
                         hop: src.hop + 1,
-                        receiver: input.address.clone(),
+                        receivers: vec![Receiver {
+                            address: input.address.clone(),
+                            coin: Some(format!("{prev_txid}:{}", input.prev_vout)),
+                            amount: share,
+                        }],
                         path,
                     },
                 );
             }
         }
+    }
+}
+
+/// Forward, the start address being swept with many others does not stop the trace: it may
+/// be a service sweeping deposits (then the start address is a deposit address there), or
+/// its owner gathering funds, e.g. a scammer sweeping victims' payments. The note says so.
+fn at_start(
+    hop: u32,
+    verdict: (Option<Confidence>, Option<String>),
+    shape: &TxShape,
+) -> (Option<Confidence>, Option<String>) {
+    match verdict {
+        (Some(_), note) if hop == 0 => (
+            None,
+            note.or_else(|| {
+                Some(format!(
+                    "{}: the start address was swept with others, either by a service (then it is a deposit address there) or by its owner gathering funds; followed because the trace starts here",
+                    shape.describe()
+                ))
+            }),
+        ),
+        v => v,
     }
 }
 

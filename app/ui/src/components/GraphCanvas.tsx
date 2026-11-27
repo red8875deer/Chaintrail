@@ -348,7 +348,14 @@ export function GraphCanvas({
         view(cy, path.nonempty() ? path : cy.elements(), focus(), true);
         glide(cy, before);
       },
-      png: () => cy.png({ full: true, scale: 2, bg: readPalette().surface }),
+      // Sharp but within the browser's canvas size limit (a too-large canvas silently
+      // yields an empty image).
+      png: () => {
+        if (cy.elements().empty()) return "";
+        const bb = cy.elements().boundingBox();
+        const scale = Math.min(2, 16000 / Math.max(bb.w, bb.h, 1), Math.sqrt(120e6 / Math.max(bb.w * bb.h, 1)));
+        return cy.png({ full: true, scale, bg: readPalette().surface });
+      },
       focus: (id: string) => {
         const el = cy.getElementById(id);
         if (el.empty()) return false;

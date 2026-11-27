@@ -192,6 +192,8 @@ fn node_id(
 ) -> (String, NodeKind) {
     match (address, coin) {
         (Some(a), _) => (a.to_string(), NodeKind::Address),
+        // A coin reference without ":vout" is a whole transaction (CoinJoin, payout).
+        (None, Some(c)) if !c.contains(':') => (format!("tx:{c}"), NodeKind::Transaction),
         (None, Some(c)) => (format!("noaddr:{c}"), NodeKind::NoAddress),
         (None, None) => (format!("noaddr:{txid}:{side}"), NodeKind::NoAddress),
     }
@@ -269,6 +271,12 @@ pub fn build(report: &TraceReport) -> GraphView {
             (Some(a), _) => {
                 let id = a.to_string();
                 b.node(&id, NodeKind::Address, lead.hops);
+                id
+            }
+            // One coin without an address: the same node as the flows that reach it.
+            (None, Some(t)) if lead.vout.is_some() => {
+                let id = format!("noaddr:{t}:{}", lead.vout.unwrap_or_default());
+                b.node(&id, NodeKind::NoAddress, lead.hops);
                 id
             }
             (None, Some(t)) => {
@@ -369,6 +377,18 @@ pub fn build(report: &TraceReport) -> GraphView {
                 false,
                 None,
             );
+        }
+    }
+
+    // Every graph has a start: e.g. a backward trace of a coinbase or a CoinJoin, where no
+    // flow leaves the start, marks the traced output or transaction itself.
+    if !b.nodes.iter().any(|n| n.seed) {
+        let mut ids: Vec<String> = report.seed_outputs.iter().map(|o| seed_node(o).0).collect();
+        if let Some(o) = report.seed_outputs.first() {
+            ids.push(format!("tx:{}", o.txid));
+        }
+        if let Some(i) = ids.iter().find_map(|id| b.index.get(id).copied()) {
+            b.nodes[i].seed = true;
         }
     }
 

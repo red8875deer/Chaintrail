@@ -58,9 +58,18 @@ impl EntityCategory {
 
     /// Whether funds reaching this category are a lead (and tracing stops there by default).
     /// Custodial services and protocols are where an investigator acts next: request records,
-    /// ask for a freeze, or continue on another chain.
+    /// ask for a freeze, or continue on another chain. Wallets of perpetrators (ransomware,
+    /// hacks, scams, terrorist financing) and individuals are not: the funds are followed
+    /// through them, and the label is reported on the way.
     pub fn is_endpoint(self) -> bool {
-        !matches!(self, EntityCategory::Individual)
+        !matches!(
+            self,
+            EntityCategory::Individual
+                | EntityCategory::Ransomware
+                | EntityCategory::Hack
+                | EntityCategory::Scam
+                | EntityCategory::TerroristFinancing
+        )
     }
 
     /// Whether funds can be followed through this kind of entity on-chain

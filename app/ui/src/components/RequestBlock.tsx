@@ -60,10 +60,14 @@ export function RequestBlock({ view, node, lead }: { view: TraceView; node: Grap
       live = false;
     };
   }, [txid]);
-  if (!edge || !node.address) return null;
+  if (!edge) return null;
 
+  // A service found by a transaction (e.g. a withdrawal payout traced back) has no single
+  // address: the request names the transaction.
   const address = node.address;
-  const onChain = tx
+  const onChain = !address
+    ? null
+    : tx
     ? forward
       ? tx.outputs.filter((o) => o.address === address).reduce((s, o) => s + o.value, 0)
       : tx.inputs.filter((i) => i.address === address).reduce((s, i) => s + i.value, 0)
@@ -79,7 +83,7 @@ export function RequestBlock({ view, node, lead }: { view: TraceView; node: Grap
     `Basis: ${claim.kind}. ${claim.headline}`,
     ...claim.evidence.map((e) => `  - ${e}`),
     ...(claim.url ? [`Source: ${claim.url}${claim.asOf ? ` (as of ${claim.asOf})` : ""}`] : []),
-    `${forward ? "Deposit address" : "Sending address"}: ${address}`,
+    ...(address ? [`${forward ? "Deposit address" : "Sending address"}: ${address}`] : []),
     `Transaction: ${edge.txid} (${formatUtc(edge.time)})`,
     ...(onChain !== null
       ? [`${forward ? "Paid to" : "Paid from"} this address in that transaction: ${formatBtc(onChain, 8)} BTC`]
@@ -94,18 +98,26 @@ export function RequestBlock({ view, node, lead }: { view: TraceView; node: Grap
     <section className="request" aria-label="For a records request">
       <h4>For a records request</h4>
       <dl className="request-list">
-        <dt>{forward ? "Deposit address" : "Sending address"}</dt>
-        <dd>
-          <Id value={address} />
-        </dd>
+        {address && (
+          <>
+            <dt>{forward ? "Deposit address" : "Sending address"}</dt>
+            <dd>
+              <Id value={address} />
+            </dd>
+          </>
+        )}
         <dt>Transaction</dt>
         <dd>
           <Id value={edge.txid} short href={href({ page: "tx", txid: edge.txid })} />
         </dd>
         <dt>Time</dt>
         <dd>{formatUtc(edge.time)}</dd>
-        <dt>{forward ? "Paid to this address" : "Paid from this address"}</dt>
-        <dd>{onChain !== null ? <Btc sats={onChain} /> : failed ? "could not be loaded" : "loading…"}</dd>
+        {address && (
+          <>
+            <dt>{forward ? "Paid to this address" : "Paid from this address"}</dt>
+            <dd>{onChain !== null ? <Btc sats={onChain} /> : failed ? "could not be loaded" : "loading…"}</dd>
+          </>
+        )}
         <dt>Traced share</dt>
         <dd>
           <Btc sats={edge.amount} />

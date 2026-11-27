@@ -16,7 +16,8 @@ function download(name: string, data: BlobPart, type: string) {
 }
 
 function baseName(view: TraceView): string {
-  const seed = view.report.seed.replace(/[^0-9a-zA-Z]+/g, "-").slice(0, 24);
+  const parts = view.report.seed.split(/[^0-9a-zA-Z]+/).filter(Boolean);
+  const seed = [parts[0]?.slice(0, 16), ...parts.slice(1).map((p) => p.slice(0, 12))].filter(Boolean).join("-");
   return `chaintrail-${view.report.direction}-${seed}`;
 }
 
@@ -64,9 +65,13 @@ export function exportCsv(view: TraceView) {
   download(`${baseName(view)}-leads.csv`, leadsCsv(view), "text/csv");
 }
 
-export function exportPng(view: TraceView, dataUrl: string) {
-  const bin = atob(dataUrl.split(",")[1] ?? "");
+/** Saves the graph image; returns false if there is nothing to save. */
+export function exportPng(view: TraceView, dataUrl: string): boolean {
+  const data = dataUrl.split(",")[1] ?? "";
+  if (!data) return false;
+  const bin = atob(data);
   const bytes = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
   download(`${baseName(view)}.png`, bytes, "image/png");
+  return true;
 }

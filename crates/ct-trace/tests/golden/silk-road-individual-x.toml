@@ -18,7 +18,10 @@ recording = "silk-road-individual-x.json"
 direction = "backward"
 txid = "3f036ff88bb851b57a1e28780dbce35a6457a8b57995c095b55b3b0cf48ba9fd"
 vout = 0
-max_hops = 3
+# 4 hops back: seizure (2020) → self-transfer (2020) → self-transfer (2015) → the 2013
+# transfer from the two addresses in ¶15. Backward and forward count hops the same way:
+# leads are at most max_hops transactions away.
+max_hops = 4
 max_txs = 25
 
 [[expect]]

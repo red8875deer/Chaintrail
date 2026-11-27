@@ -468,7 +468,10 @@ async fn backward_finds_mined_coins_and_service_withdrawals() {
         .unwrap();
     assert_eq!(mined.txid, Some(txid(10)));
     assert_eq!(service.category, Some(EntityCategory::UnknownService));
-    assert_eq!(service.address, Some(hot));
+    // The service is the payout transaction as a whole, not one of its input addresses.
+    assert_eq!(service.address, None);
+    assert!(service.txid.is_some());
+    let _ = hot;
     // Pro-rata by input value: 6.25 : 1.
     assert_eq!(mined.amount + service.amount, r.seed_amount);
     assert!(mined.amount > 6 * service.amount);
@@ -562,7 +565,7 @@ async fn consolidation_is_named_by_a_co_spent_label() {
     assert_eq!(lead.category, Some(EntityCategory::Exchange));
     assert!(
         lead.title
-            .starts_with("Example Exchange (exchange): deposit swept"),
+            .starts_with("Likely Example Exchange (exchange): deposit swept"),
         "{}",
         lead.title
     );
@@ -680,11 +683,12 @@ async fn backward_batch_payout_is_named_by_sender_label() {
     assert_eq!(lead.category, Some(EntityCategory::Exchange));
     assert!(
         lead.title
-            .starts_with("Example Exchange (exchange): funds sent in a batch payout"),
+            .starts_with("Likely Example Exchange (exchange): funds sent in a batch payout"),
         "{}",
         lead.title
     );
-    assert_eq!(lead.address, Some(addr(200)));
+    // Drawn as the payout transaction; the labelled sender is in the evidence.
+    assert_eq!(lead.address, None);
 }
 
 #[tokio::test]
@@ -805,6 +809,14 @@ async fn graph_of_a_trace() {
     )
     .await;
     let g = build(&r);
+    // The coin entering the CoinJoin has its own edge into the transaction.
+    assert!(
+        r.flows
+            .iter()
+            .any(|f| f.to_coin.as_deref() == Some(txid(3).as_str()) && f.from == Some(addr(5))),
+        "{:#?}",
+        r.flows
+    );
 
     let node = |id: &str| g.nodes.iter().find(|n| n.id == id).unwrap();
     let seed = node(addr(2).as_str());
@@ -1122,4 +1134,99 @@ async fn small_test_payment_to_an_endpoint_counts_toward_it() {
     assert_eq!(ex[0].kind, LeadKind::Endpoint);
     assert_eq!(ex[0].amount, 20_000 + BTC - 40_000);
     assert_eq!(r.stats.below_threshold, 0);
+}
+
+#[tokio::test]
+async fn backward_credits_each_traced_output_with_its_own_share() {
+    // tx 20 pays addr 30 (1 BTC) and addr 31 (2 BTC); the seed tx 21 spends both.
+    let t19 = tx(
+        &txid(19),
+        90,
+        &[(&txid(900), 0, &addr(28), 3 * BTC + 10_000)],
+        &[(&addr(29), 3 * BTC)],
+    );
+    let t20 = tx(
+        &txid(20),
+        100,
+        &[(&txid(19), 0, &addr(29), 3 * BTC)],
+        &[(&addr(30), BTC), (&addr(31), 2 * BTC - 10_000)],
+    );
+    let t21 = tx(
+        &txid(21),
+        101,
+        &[
+            (&txid(20), 0, &addr(30), BTC),
+            (&txid(20), 1, &addr(31), 2 * BTC - 10_000),
+        ],
+        &[(&addr(40), 3 * BTC - 20_000)],
+    );
+    let p = MemoryBitcoin::new([t19, t20, t21]);
+    let r = run(
+        &p,
+        Seed::Output {
+            txid: txid(21),
+            vout: 0,
+        },
+        TraceConfig {
+            direction: Direction::Backward,
+            max_hops: 3,
+            min_amount: Some(1),
+            ..Default::default()
+        },
+    )
+    .await;
+    // In tx 20, each output is credited only with what the seed drew from it.
+    let into = |a: u8| -> u64 {
+        r.flows
+            .iter()
+            .filter(|f| f.txid == txid(20) && f.to == Some(addr(a)))
+            .map(|f| f.amount)
+            .sum()
+    };
+    let (a30, a31) = (into(30), into(31));
+    assert!(a30 > 0 && a31 > 0, "{:#?}", r.flows);
+    assert!(a31 > a30 * 19 / 10 && a31 < a30 * 21 / 10, "{a30} vs {a31}");
+    assert!(a30 <= BTC && a31 <= 2 * BTC);
+    // Leads are never further back than the hop limit.
+    assert!(r.leads.iter().all(|l| l.hops <= 3), "{:#?}", r.leads);
+}
+
+#[tokio::test]
+async fn backward_leads_respect_the_hop_limit() {
+    let t20 = tx(
+        &txid(20),
+        100,
+        &[(&txid(19), 0, &addr(29), BTC)],
+        &[(&addr(30), BTC - 10_000)],
+    );
+    let t21 = tx(
+        &txid(21),
+        101,
+        &[(&txid(20), 0, &addr(30), BTC - 10_000)],
+        &[(&addr(40), BTC - 20_000)],
+    );
+    let p = MemoryBitcoin::new([t20, t21]);
+    let r = run(
+        &p,
+        Seed::Output {
+            txid: txid(21),
+            vout: 0,
+        },
+        TraceConfig {
+            direction: Direction::Backward,
+            max_hops: 1,
+            min_amount: Some(1),
+            ..Default::default()
+        },
+    )
+    .await;
+    assert!(r.leads.iter().all(|l| l.hops <= 1), "{:#?}", r.leads);
+    // The branch not followed names the coin exactly.
+    let nf = r
+        .leads
+        .iter()
+        .find(|l| matches!(l.kind, LeadKind::Unexplored { .. }))
+        .unwrap();
+    assert_eq!(nf.txid, Some(txid(20)));
+    assert_eq!(nf.vout, Some(0));
 }

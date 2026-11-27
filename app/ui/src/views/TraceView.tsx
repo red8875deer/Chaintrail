@@ -400,8 +400,8 @@ export function TraceView({ params }: { params: TraceParams | null }) {
                     type="button"
                     className="btn"
                     onClick={() => {
-                      const png = controls.current?.png();
-                      if (png) exportPng(view, png);
+                      const png = controls.current?.png() ?? "";
+                      if (!exportPng(view, png)) window.alert("There is no graph to save at the current setting.");
                     }}
                   >
                     Save graph (PNG)

@@ -97,8 +97,11 @@ pub fn classify(tx: &UtxoTx) -> TxShape {
         .filter_map(|o| o.address.as_ref())
         .collect::<HashSet<_>>()
         .len();
+    // Recipients: distinct addresses, each output without an address counting on its own.
+    // Several outputs to one address are still one recipient (a consolidation split up).
+    let recipients = distinct_outputs + outputs.iter().filter(|o| o.address.is_none()).count();
 
-    if outputs.len() <= 2 && distinct_inputs >= CONSOLIDATION_MIN_INPUTS {
+    if recipients <= 2 && distinct_inputs >= CONSOLIDATION_MIN_INPUTS {
         let confidence = if distinct_inputs >= CONSOLIDATION_SERVICE_INPUTS {
             Confidence::Medium
         } else {
@@ -149,6 +152,21 @@ mod tests {
     use super::*;
     use crate::btc::change::detect_change;
     use crate::btc::fixtures;
+
+    #[test]
+    fn several_outputs_to_one_address_are_a_consolidation() {
+        let tx = fixtures::tx("consolidation_equal_outputs");
+        match classify(&tx) {
+            TxShape::Consolidation {
+                distinct_inputs,
+                confidence,
+            } => {
+                assert!(distinct_inputs >= 400, "{distinct_inputs}");
+                assert_eq!(confidence, Confidence::Medium);
+            }
+            other => panic!("{other:?}"),
+        }
+    }
 
     #[test]
     fn real_shapes() {

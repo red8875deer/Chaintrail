@@ -33,8 +33,14 @@ It produces:
 | Bridge | Known bridge contracts / deposit addresses; trace continues on the other chain when the bridge event can be matched |
 | DeFi protocol / DEX | Known contracts; for swaps, value continues in the output asset |
 | Sanctioned | OFAC SDN list match |
+| Darknet market, gambling, payment processor, wallet service | Label match |
 | Swap service (instant exchanger) | Label match; behaviour |
 | Funds at rest | Unspent / unmoved balance |
+
+Wallets of **perpetrators** (labels of category ransomware, hack, scam, terrorist financing)
+and of individuals are **not** endpoints: the funds are followed through them and the label
+is listed as passed through. (A ransomware label on the first hop would otherwise end the
+trace before the funds reach an exchange or a seizure.)
 
 An endpoint found by **label** has the label's confidence. An endpoint found by
 **behaviour** is reported as e.g. "likely exchange (unidentified)" with medium/low
@@ -46,16 +52,31 @@ confidence and the evidence.
   flows. Limits: `--max-hops` (default 8), `--max-txs` (default 100), and a minimum branch
   size (default 0.1% of the traced amount, at least 1,000 sats).
 - The **seed address is never treated as an endpoint**: you chose to trace from it, even if
-  it is busy (scam collection addresses often are).
+  it is busy or labelled (scam collection addresses often are), and forward its sweep
+  together with many other addresses is not a service stop either (a scammer gathering
+  victims' payments looks the same; the note on the edge says both readings). Its label,
+  if any, is listed. Backward, a start transaction that is a service payout does stop: that
+  is where the funds came from.
+- **Hops** are counted the same way in both directions: a lead is at most `max-hops`
+  transactions away from the seed. Each coin keeps the shortest route by which the funds
+  reached it, and its hop count and path always agree.
+- **Backward**, each traced output of a transaction is credited only with what it received,
+  and a whole transaction traced back is drawn as the transaction itself. Funds from a
+  CoinJoin or a service payout are drawn as coming from that transaction (not from one of
+  its input addresses); funds entering a CoinJoin are drawn coin by coin.
+- Small amounts that reach an address already known as an endpoint count toward it.
+- Transactions fetched only to look at (the age of a consolidation's inputs, whether they
+  came out of CoinJoins) do not use the trace's transaction budget.
 - **Accounting always balances:** leads + fees + small branches = the traced amount.
   Forward, fees and rounding go to "fees". Backward, rounding goes to the largest input.
 - Leads that stop because of limits or data errors are reported as **not followed**,
-  separately from real endpoints.
+  separately from real endpoints, one per coin (`txid:vout`), so each can be continued.
 
 ### Labels during a trace
 
-- A labelled address **stops** the trace if its category is an endpoint (anything but
-  `individual`) and its confidence is at least the stop level (Medium by default).
+- A labelled address **stops** the trace if its category is an endpoint (see §2: not
+  individuals or perpetrators) and its confidence is at least the stop level (Medium by
+  default).
   Weaker labels are listed as "labelled addresses passed through" and tracing continues.
 - A service detected by **transaction shape** (deposit consolidation, batch payout) is
   **named** from labels on addresses of the same wallet: any labelled input of the
@@ -102,14 +123,17 @@ Reference: Kappos et al., *How to Peel a Million*, USENIX Security 2022.
 | WabiSabi (Wasabi 2.x) | ≥ 50 inputs and outputs, ≥ 50% of outputs are standard denominations (2ⁿ, 3ⁿ, 2·3ⁿ, 10ⁿ, 2·10ⁿ, 5·10ⁿ sats ≥ 5,000) | High |
 | Generic (JoinMarket etc.) | ≥ 3 equal outputs, at least as many inputs, inputs from 2+ addresses, ≤ one change per participant | Medium (High with ≥ 5 equal) |
 
-Exchange batch payouts (few inputs, many outputs) and consolidations are explicitly not
-CoinJoins. A CoinJoin is an endpoint of type *mixer* unless demixing (later phase) gives a
+In every kind, the equal outputs must go to separate addresses (at least 90% distinct):
+equal outputs paid to one address are one owner splitting or consolidating funds (seen in
+the WannaCry cash-out: 727 inputs into 6 × 500 BTC to one address). Exchange batch payouts
+(few inputs, many outputs) and consolidations are explicitly not CoinJoins. Titles of
+CoinJoin leads say "Likely mixed in …": the pattern is strong evidence, not proof. A CoinJoin is an endpoint of type *mixer* unless demixing (later phase) gives a
 high-confidence link.
 
 ### 3.3a Service detection by behaviour
 | Signal | Low (noted, trace continues) | Medium (stops) | High (stops) |
 |---|---|---|---|
-| Consolidation: ≤ 2 outputs, many distinct input addresses | ≥ 20 | ≥ 50 | — |
+| Consolidation: ≤ 2 recipients (distinct output addresses), many distinct input addresses | ≥ 20 | ≥ 50 | — |
 | Batch payout: many distinct output addresses, fewer inputs | ≥ 20 | ≥ 50 | ≥ 100 |
 | Busy address: transactions and spent outputs | — | ≥ 1,000 and ≥ 100 | ≥ 10,000 and ≥ 1,000 |
 
@@ -119,6 +143,11 @@ old coins (for example a thief moving stolen funds years later), not a service s
 fresh deposits, and the trace continues through it. Measured on real transactions: exchange
 and darknet-market sweeps had input ages of 0–40 days; the 2016 Bitfinex thief's 2022
 consolidations about 2,009 days. The `bitfinex-2016-hack` golden case fails without this rule.
+
+**Post-mix rule:** a consolidation whose inputs are at least 80% standard CoinJoin amounts
+*and* most of whose sampled inputs were created by CoinJoin transactions is one user merging
+mixed coins (where the trail continues), not a service. Round amounts alone are not enough:
+ordinary deposits are often round too.
 
 Small fan-outs are not treated as services because launderers also spread funds over a few
 dozen mule addresses. Addresses that only receive (donation addresses, dust targets) are

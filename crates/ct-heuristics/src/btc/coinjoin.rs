@@ -80,9 +80,29 @@ pub fn detect_coinjoin(tx: &UtxoTx) -> Option<CoinJoinInfo> {
         .len();
     let n_in = tx.inputs.len();
     let n_out = outputs.len();
+    // In a CoinJoin every participant gets their own outputs: equal outputs all paid to one
+    // address are one owner splitting or consolidating, not mixing.
+    let key = |o: &ct_core::TxOutput| {
+        o.address
+            .as_ref()
+            .map(|a| a.as_str().to_string())
+            .unwrap_or_else(|| format!("#{}", o.index))
+    };
+    let distinct_equal = spendable_outputs(tx)
+        .filter(|o| o.value == equal_value)
+        .map(key)
+        .collect::<HashSet<_>>()
+        .len();
+    let distinct_out = spendable_outputs(tx).map(key).collect::<HashSet<_>>().len();
+    let separate_owners = |distinct: usize, count: usize| distinct * 10 >= count * 9;
 
     // Whirlpool: N inputs, N outputs, all outputs identical, N in 5..=8.
-    if (5..=8).contains(&n_in) && n_in == n_out && equal_count == n_out && distinct_inputs >= 2 {
+    if (5..=8).contains(&n_in)
+        && n_in == n_out
+        && equal_count == n_out
+        && distinct_inputs >= 2
+        && distinct_equal == equal_count
+    {
         return Some(CoinJoinInfo {
             kind: CoinJoinKind::Whirlpool,
             equal_value,
@@ -101,7 +121,10 @@ pub fn detect_coinjoin(tx: &UtxoTx) -> Option<CoinJoinInfo> {
             .filter(|v| is_standard_denomination(**v))
             .count();
         let share = std_count as f64 / n_out as f64;
-        if share >= WABISABI_MIN_STD_SHARE && distinct_inputs >= WABISABI_MIN_IO / 2 {
+        if share >= WABISABI_MIN_STD_SHARE
+            && distinct_inputs >= WABISABI_MIN_IO / 2
+            && separate_owners(distinct_out, n_out)
+        {
             return Some(CoinJoinInfo {
                 kind: CoinJoinKind::WabiSabi,
                 equal_value,
@@ -123,6 +146,8 @@ pub fn detect_coinjoin(tx: &UtxoTx) -> Option<CoinJoinInfo> {
         && distinct_inputs >= 2
         && n_out <= 2 * equal_count + 1
         && equal_value > 0
+        && distinct_equal >= 3
+        && separate_owners(distinct_equal, equal_count)
     {
         let confidence = if equal_count >= 5 {
             Confidence::High
@@ -187,6 +212,13 @@ mod tests {
         assert_eq!(info.confidence, Confidence::High);
         assert_eq!(info.equal_value, 262_144);
         assert_eq!(info.equal_count, 33);
+    }
+
+    #[test]
+    fn equal_outputs_to_one_address_are_not_a_coinjoin() {
+        // WannaCry-era consolidation: 727 inputs into 6 x 500 BTC + 2 more, all paid to one
+        // address. Equal values, but one owner: not mixing.
+        assert!(detect_coinjoin(&fixtures::tx("consolidation_equal_outputs")).is_none());
     }
 
     #[test]

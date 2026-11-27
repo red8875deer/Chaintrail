@@ -234,6 +234,8 @@ export interface Lead {
   /** Traced address next to the lead on the path. */
   via: Address | null;
   txid: string | null;
+  /** Output of `txid` holding the funds when the lead is one coin (at rest, not followed). */
+  vout?: number | null;
   amount: number;
   first_time: number | null;
   hops: number;
@@ -254,7 +256,8 @@ export interface Flow {
   time: number | null;
   from: Address | null;
   to: Address | null;
-  /** Coins (txid:vout) the funds moved from and to; links outputs without an address. */
+  /** Coins (txid:vout) the funds moved from and to; links outputs without an address. A bare
+   * txid stands for a whole transaction (e.g. funds entering a CoinJoin). */
   from_coin: string | null;
   to_coin: string | null;
   amount: number;
