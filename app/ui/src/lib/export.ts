@@ -122,6 +122,7 @@ export function leadsCsv(view: TraceView, meta?: Provenance): string {
     "amount_basis",
     "coin",
     "path",
+    "largest_transfer",
     "all_transactions",
     "evidence_or_source",
     ...(meta ? ["generated_utc", "app_version", "data_source", "trace_settings"] : []),
@@ -137,6 +138,16 @@ export function leadsCsv(view: TraceView, meta?: Provenance): string {
     for (const f of r.flows)
       if ((forward ? f.to?.value : f.from?.value) === a && !seen.has(f.txid)) seen.set(f.txid, f.time ?? Infinity);
     return [...seen].sort((x, y) => x[1] - y[1]).map(([t]) => t).join(" ");
+  };
+  // The transfer that carried most of an endpoint's amount (the lead's own transaction is on
+  // its shortest route, which may be a small test payment).
+  const largest = (l: (typeof r.leads)[number]) => {
+    if (l.kind.kind !== "endpoint" || !l.address) return "";
+    const a = l.address.value;
+    const by = new Map<string, number>();
+    for (const f of r.flows)
+      if ((forward ? f.to?.value : f.from?.value) === a) by.set(f.txid, (by.get(f.txid) ?? 0) + f.amount);
+    return [...by].sort((x, y) => y[1] - x[1])[0]?.[0] ?? "";
   };
   const rows = r.leads.map((l) => {
     const c = describeClaim(l.claim);
@@ -155,6 +166,7 @@ export function leadsCsv(view: TraceView, meta?: Provenance): string {
       l.mixed_in ? `pro-rata share (funds mixed in ${l.mixed_in})` : "on-chain (unmixed)",
       l.txid && l.vout !== null && l.vout !== undefined ? `${l.txid}:${l.vout}` : "",
       l.path.join(" > "),
+      largest(l),
       transfers(l),
       [...c.evidence, c.url ?? ""].filter(Boolean).join(" | "),
       ...(meta
@@ -167,6 +179,26 @@ export function leadsCsv(view: TraceView, meta?: Provenance): string {
         : []),
     ];
   });
+  // What is not a lead, so the amounts add up to the traced amount.
+  const extra = (name: string, amount: number, why: string) => {
+    const row: (string | number)[] = new Array(header.length).fill("");
+    row[0] = name;
+    row[1] = "not a lead";
+    row[5] = plainBtc(amount);
+    row[6] = plainShare(amount, r.seed_amount);
+    row[header.indexOf("evidence_or_source")] = why;
+    if (meta) row.splice(header.length - 4, 4, meta.generated_at, meta.app_version ?? "", meta.data_source ?? "", meta.settings);
+    return row;
+  };
+  if (r.stats.below_threshold > 0)
+    rows.push(
+      extra(
+        "Small branches not followed",
+        r.stats.below_threshold,
+        `branches under ${plainBtc(r.min_amount)} BTC; the largest are listed with their coins in the JSON export (small_branches)`,
+      ),
+    );
+  if (r.stats.fees > 0) rows.push(extra("Fees", r.stats.fees, "transaction fees paid from the traced funds (and rounding)"));
   return [header, ...rows].map((row) => row.map(csvCell).join(",")).join("\r\n") + "\r\n";
 }
 

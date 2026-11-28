@@ -233,6 +233,66 @@ pub fn detect_coinjoin(tx: &UtxoTx) -> Option<CoinJoinInfo> {
     None
 }
 
+/// A participant's change in an equal-output CoinJoin, matched by amount: an input of value
+/// v, the round's equal amount e and exactly one output c with c ≈ v − e (JoinMarket makers
+/// receive a small fee, takers pay fees). Only for rounds with a single equal amount, where
+/// the arithmetic identifies the change; the equal outputs themselves stay unlinkable.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ChangePair {
+    /// Index into `tx.inputs`.
+    pub input: usize,
+    /// Output index (`TxOutput::index`).
+    pub output: u32,
+    /// c − (v − e), sats: positive for a maker's fee, negative for fees paid.
+    pub delta: i64,
+}
+
+/// Change outputs may differ from v − e by at most this share of e (fees), or 10,000 sats.
+pub const CHANGE_MATCH_TOLERANCE_PCT: u64 = 1;
+
+pub fn change_pairs(tx: &UtxoTx, info: &CoinJoinInfo) -> Vec<ChangePair> {
+    if info.kind != CoinJoinKind::Generic {
+        return Vec::new();
+    }
+    let outputs: Vec<_> = spendable_outputs(tx).collect();
+    let mut counts: HashMap<u64, usize> = HashMap::new();
+    for o in &outputs {
+        *counts.entry(o.value).or_default() += 1;
+    }
+    // One mixed amount only (JoinMarket); several levels (Wasabi 1.x) make it ambiguous.
+    if counts.values().filter(|n| **n >= 2).count() != 1 {
+        return Vec::new();
+    }
+    let e = info.equal_value;
+    let tol = (e * CHANGE_MATCH_TOLERANCE_PCT / 100).max(10_000) as i64;
+    let candidates: Vec<_> = outputs.iter().filter(|o| counts[&o.value] == 1).collect();
+    let mut pairs: Vec<ChangePair> = Vec::new();
+    for (k, input) in tx.inputs.iter().enumerate() {
+        if input.value <= e {
+            continue;
+        }
+        let want = (input.value - e) as i64;
+        let hits: Vec<_> = candidates
+            .iter()
+            .filter(|o| (o.value as i64 - want).abs() <= tol)
+            .collect();
+        if let [o] = hits.as_slice() {
+            pairs.push(ChangePair {
+                input: k,
+                output: o.index,
+                delta: o.value as i64 - want,
+            });
+        }
+    }
+    // An output matched by two inputs is not identified.
+    let mut used: HashMap<u32, usize> = HashMap::new();
+    for p in &pairs {
+        *used.entry(p.output).or_default() += 1;
+    }
+    pairs.retain(|p| used[&p.output] == 1);
+    pairs
+}
+
 /// ChipMixer-style chip values: 0.001 BTC times a power of two, up to 8.192 BTC.
 pub fn is_chip_value(v: u64) -> bool {
     v % 100_000 == 0 && (v / 100_000).is_power_of_two() && v / 100_000 <= 8_192
@@ -429,6 +489,22 @@ mod tests {
                 "{name}"
             );
         }
+    }
+
+    #[test]
+    fn joinmarket_change_is_matched_by_amount() {
+        // Real JoinMarket round: 12 inputs, 11 × 6,357,366 sats. Maker input 1 (20.96 BTC)
+        // has its change in output 6: input − equal output + a 413-sat maker fee.
+        let tx = fixtures::tx("coinjoin_joinmarket");
+        let info = detect_coinjoin(&tx).unwrap();
+        assert_eq!(info.equal_value, 6_357_366);
+        let pairs = change_pairs(&tx, &info);
+        let p = pairs.iter().find(|p| p.input == 1).expect("maker change");
+        assert_eq!((p.output, p.delta), (6, 413));
+        assert!(pairs.len() >= 6, "{pairs:?}");
+        // Several mixing levels (Wasabi 1.x): change is not matched.
+        let w = fixtures::tx("coinjoin_wasabi1_161out");
+        assert!(change_pairs(&w, &detect_coinjoin(&w).unwrap()).is_empty());
     }
 
     #[test]

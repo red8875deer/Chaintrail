@@ -425,6 +425,219 @@ async fn unconfirmed_funds_at_rest_are_not_a_fact() {
     assert_eq!(l.title, "Funds at rest (unconfirmed)");
     assert_eq!(l.confidence, Confidence::Medium);
     assert!(matches!(l.claim, Claim::Inference { .. }));
+
+    // An endpoint reached through the unconfirmed transaction is at most Medium too.
+    let mut t2 = tx(
+        &txid(2),
+        101,
+        &[(&txid(1), 0, &addr(2), BTC)],
+        &[(&addr(3), BTC - 1_000)],
+    );
+    t2.block = None;
+    let p = MemoryBitcoin::new([victim_payment(), t2]).with_summary(&addr(3), 20_000, 5_000);
+    let r = run(
+        &p,
+        Seed::Output {
+            txid: txid(1),
+            vout: 0,
+        },
+        forward(),
+    )
+    .await;
+    let l = &r.leads[0];
+    assert_eq!(l.kind, LeadKind::Endpoint);
+    assert_eq!(l.confidence, Confidence::Medium);
+    let Claim::Inference { evidence, .. } = &l.claim else {
+        panic!("{:?}", l.claim)
+    };
+    assert!(evidence.iter().any(|e| e.contains("not confirmed")));
+}
+
+#[tokio::test]
+async fn a_coin_reached_again_after_it_was_followed_is_not_split() {
+    // The seed splits into A (0.6) and B (0.4); tx 3 spends both into X (0.9) and Y (0.1).
+    // A is followed first, so X is reached twice: 0.54 from A, then 0.36 from B. The 0.36
+    // part is under the minimum (0.39 BTC) but X was already followed, so it goes the same way
+    // and the lead at X gets both parts; only Y is a small branch.
+    let t2 = tx(
+        &txid(2),
+        101,
+        &[(&txid(1), 0, &addr(2), BTC)],
+        &[(&addr(3), 60_000_000), (&addr(4), 40_000_000 - 1_000)],
+    );
+    let t3 = tx(
+        &txid(3),
+        102,
+        &[
+            (&txid(2), 0, &addr(3), 60_000_000),
+            (&txid(2), 1, &addr(4), 40_000_000 - 1_000),
+        ],
+        &[(&addr(5), 90_000_000), (&addr(6), 10_000_000 - 2_000)],
+    );
+    let p = MemoryBitcoin::new([victim_payment(), t2, t3]);
+    let r = run(
+        &p,
+        Seed::Output {
+            txid: txid(1),
+            vout: 0,
+        },
+        TraceConfig {
+            min_amount: Some(39_000_000),
+            ..forward()
+        },
+    )
+    .await;
+    let x = r
+        .leads
+        .iter()
+        .find(|l| l.address == Some(addr(5)))
+        .expect("lead at X");
+    assert!(x.amount > 89_000_000, "{}", x.amount);
+    assert!(
+        r.small_branches.iter().all(|b| b.address == Some(addr(6))),
+        "{:#?}",
+        r.small_branches
+    );
+    // One flow per transfer, not one per part.
+    assert_eq!(
+        r.flows
+            .iter()
+            .filter(|f| f.txid == txid(3) && f.to == Some(addr(5)))
+            .count(),
+        2,
+        "one from each input coin"
+    );
+}
+
+#[tokio::test]
+async fn change_back_to_the_start_address_does_not_make_it_an_endpoint() {
+    // The start address (2, busy) pays 0.1 BTC on and sends the rest back to itself; the
+    // trace continues from it instead of calling it a service one hop later.
+    let t2 = tx(
+        &txid(2),
+        101,
+        &[(&txid(1), 0, &addr(2), BTC)],
+        &[(&addr(6), 10_000_000), (&addr(2), BTC - 10_001_000)],
+    );
+    let t3 = tx(
+        &txid(3),
+        102,
+        &[(&txid(2), 1, &addr(2), BTC - 10_001_000)],
+        &[(&addr(7), BTC - 10_002_000)],
+    );
+    let p = MemoryBitcoin::new([victim_payment(), t2, t3]).with_summary(&addr(2), 20_000, 5_000);
+    let r = run(
+        &p,
+        Seed::Output {
+            txid: txid(1),
+            vout: 0,
+        },
+        forward(),
+    )
+    .await;
+    assert!(
+        r.leads.iter().all(|l| l.address != Some(addr(2))),
+        "{:#?}",
+        r.leads
+    );
+    assert!(r.leads.iter().any(|l| l.address == Some(addr(7))));
+}
+
+#[tokio::test]
+async fn sanctioned_individuals_are_followed_and_entities_stop() {
+    let t2 = tx(
+        &txid(2),
+        101,
+        &[(&txid(1), 0, &addr(2), BTC)],
+        &[(&addr(7), BTC - 1_000)],
+    );
+    let t3 = tx(
+        &txid(3),
+        102,
+        &[(&txid(2), 0, &addr(7), BTC - 1_000)],
+        &[(&addr(8), BTC - 2_000)],
+    );
+    let p = MemoryBitcoin::new([victim_payment(), t2, t3]);
+    let seed = || Seed::Output {
+        txid: txid(1),
+        vout: 0,
+    };
+    let sdn = |kind: &str| {
+        let mut l = label(
+            7,
+            "EXAMPLE PERSON",
+            EntityCategory::Sanctioned,
+            Confidence::High,
+        );
+        l.note = Some(format!("SDN uid 1; {kind}; programs: CYBER2"));
+        l
+    };
+    // A person on the list: followed through, listed as passed.
+    let r = run_with_labels(
+        &p,
+        &MemoryLabels::new([sdn("Individual")]),
+        seed(),
+        forward(),
+    )
+    .await;
+    assert_eq!(r.leads[0].address, Some(addr(8)));
+    assert!(r.labels_seen.iter().any(|l| l.address == addr(7)));
+    // An entity on the list (an exchange, a mixer): the trace stops there.
+    let r = run_with_labels(&p, &MemoryLabels::new([sdn("Entity")]), seed(), forward()).await;
+    assert_eq!(r.leads[0].address, Some(addr(7)));
+    assert_eq!(r.leads[0].category, Some(EntityCategory::Sanctioned));
+}
+
+#[tokio::test]
+async fn coinjoin_change_matched_by_amount_is_followed() {
+    // A JoinMarket-style round: 4 participants each put in one coin and get 0.1 BTC; the
+    // traced participant (1 BTC in) gets 0.9 BTC + 400 sats fee back as change. The change
+    // is followed; only 0.1 BTC (minus the fee received) counts as mixed.
+    const E: u64 = 10_000_000;
+    let mut cj_in: Vec<(String, u32, ct_core::Address, u64)> = vec![(txid(1), 0, addr(2), BTC)];
+    for i in 0..3u8 {
+        cj_in.push((
+            txid(50 + u32::from(i)),
+            0,
+            addr(50 + i),
+            30_000_000 + u64::from(i) * 7_000_000,
+        ));
+    }
+    let cj_in_ref: Vec<(&str, u32, &ct_core::Address, u64)> = cj_in
+        .iter()
+        .map(|(t, v, a, x)| (t.as_str(), *v, a, *x))
+        .collect();
+    let mut outs: Vec<(ct_core::Address, u64)> = (0..4u8).map(|i| (addr(60 + i), E)).collect();
+    outs.push((addr(70), BTC - E + 400));
+    for i in 0..3u64 {
+        outs.push((addr(71 + i as u8), 30_000_000 + i * 7_000_000 - E - 900));
+    }
+    let outs_ref: Vec<(&ct_core::Address, u64)> = outs.iter().map(|(a, v)| (a, *v)).collect();
+    let cj = tx(&txid(2), 101, &cj_in_ref, &outs_ref);
+    let p = MemoryBitcoin::new([victim_payment(), cj]);
+    let r = run(
+        &p,
+        Seed::Output {
+            txid: txid(1),
+            vout: 0,
+        },
+        forward(),
+    )
+    .await;
+    let mixer = r
+        .leads
+        .iter()
+        .find(|l| l.category == Some(EntityCategory::Mixer))
+        .expect("mixer lead");
+    let change = r
+        .leads
+        .iter()
+        .find(|l| l.address == Some(addr(70)))
+        .expect("change followed");
+    assert_eq!(change.amount, BTC - E + 400);
+    assert_eq!(mixer.amount, E - 400);
+    // Amounts after the CoinJoin rest on the change match: not on-chain facts.
+    assert_eq!(change.mixed_in.as_deref(), Some(txid(2).as_str()));
 }
 
 #[tokio::test]

@@ -53,7 +53,8 @@ confidence and the evidence.
   size (default 0.1% of the traced amount, at least 1,000 sats; for traces under
   100,000 sats the floor is 1% of the amount). A minimum larger than the traced amount, or a
   continuation share larger than the start, is refused rather than clipped.
-- The **seed address is never treated as an endpoint**: you chose to trace from it, even if
+- The **seed address is never treated as an endpoint**, also when funds come back to it later
+  (change to itself): you chose to trace from it, even if
   it is busy or labelled (scam collection addresses often are), and forward its sweep
   together with many other addresses is not a service stop either (a scammer gathering
   victims' payments looks the same; the note on the edge says both readings). Its label,
@@ -78,10 +79,15 @@ confidence and the evidence.
 - Leads that stop because of limits or data errors are reported as **not followed**,
   separately from real endpoints. They and funds at rest are one lead per coin
   (`txid:vout`), so each can be continued, or frozen, exactly.
-- Branches under the minimum are counted as "small branches"; the 50 largest are listed with
+- Branches under the minimum are counted as "small branches"; the 200 largest are listed with
   their coin (`small_branches`), so they can be traced on their own.
 - Funds at rest in an **unconfirmed** transaction are an inference (Medium), not a fact: the
-  transaction can still be replaced or dropped.
+  transaction can still be replaced or dropped. Any lead whose route passes through an
+  unconfirmed transaction is at most Medium and says so.
+- A transaction with several traced inputs is processed once per input, so a coin can be
+  reached again after it was followed: that later part goes the same way whatever its size
+  (it is never filed as a separate small branch), and the parts of one transfer are reported
+  as one flow.
 
 ### Labels during a trace
 
@@ -89,6 +95,9 @@ confidence and the evidence.
   individuals or perpetrators) and its confidence is at least the stop level (Medium by
   default).
   Weaker labels are listed as "labelled addresses passed through" and tracing continues.
+- An address on a sanctions list as an **individual** (OFAC "Individual" entries) is a
+  person's wallet: it is followed through like a perpetrator's and shown as sanctions
+  exposure. Sanctioned **entities** (exchanges, mixers, markets) stop the trace.
 - An address labelled as a perpetrator or an individual is **followed through** whatever its
   activity: the busy-wallet check is not applied to it (the 2020 Twitter-hack scam address
   collected hundreds of victim payments and later dust, so it looks "busy").
@@ -137,6 +146,14 @@ Reference: Kappos et al., *How to Peel a Million*, USENIX Security 2022.
 | WabiSabi (Wasabi 2.x) | ≥ 50 inputs and outputs, ≥ 50% of outputs are standard denominations (2ⁿ, 3ⁿ, 2·3ⁿ, 10ⁿ, 2·10ⁿ, 5·10ⁿ sats ≥ 5,000) | High |
 | Generic (JoinMarket, Wasabi 1.x etc.) | ≥ 3 equal outputs, at least as many inputs but at most 6 per equal output, inputs from 2+ addresses, ≤ one change per mixed output (outputs at any repeated value count as mixed: Wasabi 1.x pays several levels v, ~2v, ~4v…) | Medium (High with ≥ 5 equal) |
 | Chip split (ChipMixer-style) | ≥ 5 outputs of one value 2ᵏ × 0.001 BTC, nothing else but at most one small remainder, inputs from 2+ addresses | Medium |
+
+**Change in a CoinJoin.** In rounds with a single equal amount *e* (JoinMarket style), a
+participant's change is identified by arithmetic: for an input of value *v*, exactly one
+output of value *v − e* give or take the fees (at most 1% of *e*, or 10,000 sats) that no
+other input also matches. Forward, that part of the traced coin is followed as change and only
+the rest is the mixer lead; backward, a traced change output is traced back through its own
+input. Amounts after that are inferences (Medium), since identifying the change is. Rounds
+with several mixing levels (Wasabi 1.x) are not matched.
 
 A **Whirlpool Tx0** (one wallet preparing coins: ≥ 2 equal "premix" outputs at a pool
 amount — 0.001, 0.01, 0.05 or 0.5 BTC — plus at most 5% for fees, an OP_RETURN, and at most

@@ -2,7 +2,7 @@
 // address, which transaction and when, how much was paid there on-chain and how much of
 // it is the traced share, and why we think it is that service. Copyable as plain text.
 
-import { useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import { call } from "../api/client";
 import type { GraphNode, Lead, TraceView } from "../api/types";
 import { formatBtc, formatShare, formatUtc } from "../lib/format";
@@ -63,9 +63,13 @@ export function RequestBlock({ view, node, lead }: { view: TraceView; node: Grap
       d.traced += e.amount;
       by.set(e.txid, d);
     }
+    // Backward from a service payout: the start transaction itself is the withdrawal.
+    if (by.size === 0 && lead.txid) by.set(lead.txid, { txid: lead.txid, time: lead.first_time, traced: lead.amount });
     const t = (d: Deposit) => d.time ?? Number.MAX_SAFE_INTEGER;
     return [...by.values()].sort((a, b) => t(a) - t(b) || b.traced - a.traced);
-  }, [view, node.id, forward]);
+  }, [view, node.id, forward, lead]);
+  /** Transfers into the endpoint that were sweeps (several inputs, all paid to it). */
+  const [sweeps, setSweeps] = useState<Set<string>>(new Set());
   const [onChain, setOnChain] = useState<Map<string, number>>(new Map());
   const [failed, setFailed] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -76,6 +80,7 @@ export function RequestBlock({ view, node, lead }: { view: TraceView; node: Grap
   useEffect(() => {
     let live = true;
     setOnChain(new Map());
+    setSweeps(new Set());
     setFailed(false);
     setCopied(false);
     setAll(false);
@@ -88,6 +93,10 @@ export function RequestBlock({ view, node, lead }: { view: TraceView; node: Grap
               ? t.outputs.filter((o) => o.address === address).reduce((s, o) => s + o.value, 0)
               : t.inputs.filter((i) => i.address === address).reduce((s, i) => s + i.value, 0);
             setOnChain((m) => new Map(m).set(d.txid, sum));
+            // A sweep: an exchange gathering deposits into this wallet (several inputs, at
+            // least 90% of the value paid here).
+            const out = t.outputs.filter((o) => o.spendable).reduce((s, o) => s + o.value, 0);
+            if (forward && t.inputs.length >= 2 && sum * 10 >= out * 9) setSweeps((x) => new Set(x).add(d.txid));
           })
           .catch(() => live && setFailed(true));
     return () => {
@@ -96,6 +105,26 @@ export function RequestBlock({ view, node, lead }: { view: TraceView; node: Grap
   }, [deposits, address, forward]);
   if (deposits.length === 0) return null;
 
+  // Swept in: the customer's deposit was the address it was swept from, paid by the
+  // transaction before (or the start of the trace).
+  const depositAddresses = [...sweeps].flatMap((sweep) =>
+    view.graph.edges
+      .filter((e) => e.txid === sweep && e.target === node.id && e.source !== node.id)
+      .map((e) => {
+        const from = view.graph.nodes.find((n) => n.id === e.source);
+        const into = view.graph.edges
+          .filter((x) => x.target === e.source && x.source !== e.source)
+          .sort((a, b) => b.amount - a.amount)[0];
+        const seed = r.seed_outputs.find((o) => o.address?.value === from?.address);
+        return {
+          sweep,
+          address: from?.address ?? null,
+          txid: into?.txid ?? seed?.txid ?? null,
+          time: into?.time ?? seed?.time ?? null,
+        };
+      })
+      .filter((x) => x.address),
+  );
   const claim = describeClaim(lead.claim);
   const unknownOwner = lead.category === "unknown_service" || lead.category === null;
   const tracedTotal = deposits.reduce((s, d) => s + d.traced, 0);
@@ -118,7 +147,13 @@ export function RequestBlock({ view, node, lead }: { view: TraceView; node: Grap
     `Basis: ${claim.kind}. ${claim.headline}`,
     ...claim.evidence.map((e) => `  - ${e}`),
     ...(claim.url ? [`Source: ${claim.url}${claim.asOf ? ` (as of ${claim.asOf})` : ""}`] : []),
-    ...(address ? [`${forward ? "Deposit address" : "Sending address"}: ${address}`] : []),
+    ...depositAddresses.map(
+      (d) =>
+        `Likely deposit address (swept into this wallet in ${d.sweep}): ${d.address}${d.txid ? `; paid in transaction ${d.txid}${d.time ? ` (${formatUtc(d.time)})` : ""}` : ""}`,
+    ),
+    ...(address
+      ? [`${forward ? (depositAddresses.length ? "Wallet the deposit was swept into" : "Deposit address") : "Sending address"}: ${address}`]
+      : []),
     deposits.length === 1
       ? `Transaction: ${single!.txid} (${formatUtc(single!.time)}): ${amountText(single!)}`
       : `Transactions (${deposits.length}, oldest first):`,
@@ -163,10 +198,36 @@ export function RequestBlock({ view, node, lead }: { view: TraceView; node: Grap
           {copied ? "Copied" : deposits.length > 1 ? `Copy summary (all ${deposits.length})` : "Copy summary"}
         </button>
       </div>
+      {depositAddresses.length > 0 && (
+        <>
+          <p className="callout small">
+            The funds reached this wallet in a sweep (several deposit addresses gathered into it). The address the
+            service can look up is most likely the one they were swept from:
+          </p>
+          <dl className="request-list">
+            {depositAddresses.map((d) => (
+              <Fragment key={`${d.sweep}-${d.address}`}>
+                <dt>Likely deposit address</dt>
+                <dd>
+                  <Id value={d.address!} />
+                </dd>
+                {d.txid && (
+                  <>
+                    <dt>Paid in</dt>
+                    <dd>
+                      <Id value={d.txid} short href={href({ page: "tx", txid: d.txid })} /> {formatUtc(d.time)}
+                    </dd>
+                  </>
+                )}
+              </Fragment>
+            ))}
+          </dl>
+        </>
+      )}
       <dl className="request-list">
         {address && (
           <>
-            <dt>{forward ? "Deposit address" : "Sending address"}</dt>
+            <dt>{forward ? (depositAddresses.length ? "Swept into" : "Deposit address") : "Sending address"}</dt>
             <dd>
               <Id value={address} />
             </dd>

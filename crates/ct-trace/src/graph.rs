@@ -361,7 +361,9 @@ pub fn build(report: &TraceReport) -> GraphView {
             }
         }
         for o in &report.seed_outputs {
-            if o.amount < report.min_amount {
+            // The traced part of the output (all of it unless continuing with a share).
+            let traced = if o.traced > 0 { o.traced } else { o.amount };
+            if traced < report.min_amount {
                 continue; // not followed (counted as below the threshold)
             }
             let (id, kind) = seed_node(o);
@@ -372,7 +374,7 @@ pub fn build(report: &TraceReport) -> GraphView {
                 txid,
                 0,
                 o.time,
-                o.amount,
+                traced,
                 FlowRole::Payment,
                 false,
                 None,

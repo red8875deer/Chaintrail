@@ -313,8 +313,11 @@ export interface SeedOutput {
   txid: string;
   vout: number;
   address: Address | null;
+  /** On-chain value (sats). */
   amount: number;
   time: number | null;
+  /** The traced part of it (less when continuing with a share; 0 in old recordings). */
+  traced?: number;
 }
 
 export interface TraceReport {

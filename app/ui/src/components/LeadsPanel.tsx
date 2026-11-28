@@ -166,7 +166,8 @@ function Exposure({
             key={b.key}
             title={`${b.name}: ${formatShare(b.amount, total)}`}
             style={{
-              width: `${Math.max(Number(shareBasisPoints(b.amount, total)) / 100, 0.6)}%`,
+              // Tiny parts stay visible; the bar as a whole never exceeds its width.
+              flex: `${Math.max(Number(shareBasisPoints(b.amount, total)), 60)} 1 0`,
               background: b.colour,
             }}
           />
@@ -229,8 +230,20 @@ function PassedThrough({ view }: { view: TraceView }) {
     .filter((x) => x.amount > 0)
     .sort((a, b) => b.amount - a.amount);
   if (rows.length === 0) return null;
+  const sanctioned = rows.filter((x) => x.l.category === "sanctioned");
   return (
     <div className="passed-through">
+      {sanctioned.length > 0 && (
+        <p className="callout small" role="note">
+          Sanctions exposure: the funds {r.direction === "forward" ? "passed through" : "came through"}{" "}
+          {sanctioned.length === 1 ? "an address" : `${sanctioned.length} addresses`} on a sanctions list (
+          {sanctioned
+            .slice(0, 2)
+            .map((x) => x.l.entity)
+            .join(", ")}
+          ). The trace followed the funds on through them; dealing with these addresses may be prohibited.
+        </p>
+      )}
       <p className="small muted">{r.direction === "forward" ? "Passed through" : "Came through"} labelled addresses:</p>
       <ul className="exposure-list">
         {rows.slice(0, 5).map(({ l, amount }) => (

@@ -5,12 +5,12 @@
 //! inputs is passed to each output in proportion to the output's value. Fees and rounding
 //! are recorded, so leads + fees + dust always add up to the seed amount.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use ct_core::{
     Address, AddressSummary, Chain, Claim, Confidence, EntityCategory, Label, OutputSpend, UtxoTx,
 };
-use ct_heuristics::btc::coinjoin::is_standard_denomination;
+use ct_heuristics::btc::coinjoin::{change_pairs, is_standard_denomination};
 use ct_heuristics::btc::dormancy::SAMPLE_INPUTS;
 use ct_heuristics::btc::{
     Dormancy, TxShape, classify, detect_change, dormancy, is_peel_step, service_from_summary,
@@ -89,6 +89,7 @@ pub async fn trace_bitcoin(
         mixed_in: None,
         whole_tx_seed: matches!(seed, Seed::Tx { .. }),
         small: Vec::new(),
+        start_addresses: HashSet::new(),
     };
     let seed_tx = t.tx(seed.txid()).await?;
     let seed_outputs: Vec<(u32, Option<Address>, u64)> = match &seed {
@@ -173,17 +174,25 @@ pub async fn trace_bitcoin(
     }
     let seed_list: Vec<SeedOutput> = seed_outputs
         .iter()
-        .map(|(vout, address, amount)| SeedOutput {
+        .zip(traced_values.iter())
+        .map(|((vout, address, amount), traced)| SeedOutput {
             txid: seed_tx.txid.clone(),
             vout: *vout,
             address: address.clone(),
             amount: *amount,
             time: block_time(&seed_tx),
+            traced: *traced,
         })
         .collect();
 
     // A label on the start address is reported too (it never stops the trace there).
     // Forward from a whole transaction, its outputs are checked as endpoints instead.
+    if !t.whole_tx_seed {
+        t.start_addresses = seed_outputs
+            .iter()
+            .filter_map(|(_, a, _)| a.clone())
+            .collect();
+    }
     let start_outputs: &[(u32, Option<Address>, u64)] =
         if t.whole_tx_seed && config.direction == Direction::Forward {
             &[]
@@ -244,7 +253,49 @@ pub async fn trace_bitcoin(
         }
     }
 
-    let mut leads = t.leads;
+    let mut leads = std::mem::take(&mut t.leads);
+    // A route through a transaction that is not confirmed yet can still disappear (replaced
+    // or dropped): such leads are at most Medium and say so.
+    let unconfirmed: HashSet<&str> = t
+        .txs
+        .values()
+        .filter(|x| x.block.is_none())
+        .map(|x| x.txid.as_str())
+        .collect();
+    for l in &mut leads {
+        let Some(u) = l.path.iter().find(|p| unconfirmed.contains(p.as_str())) else {
+            continue;
+        };
+        let why = format!(
+            "transaction {u} on the route is not confirmed yet: it can still be replaced or dropped"
+        );
+        l.claim = match l.claim.clone() {
+            Claim::Fact => Claim::Inference {
+                heuristic: "unconfirmed".into(),
+                confidence: Confidence::Medium,
+                evidence: vec![why],
+            },
+            Claim::Inference {
+                heuristic,
+                confidence,
+                mut evidence,
+            } => {
+                if heuristic != "unconfirmed" {
+                    evidence.push(why);
+                }
+                Claim::Inference {
+                    heuristic,
+                    confidence: confidence.min(Confidence::Medium),
+                    evidence,
+                }
+            }
+            other => other,
+        };
+        l.confidence = l
+            .confidence
+            .min(l.claim.confidence())
+            .min(Confidence::Medium);
+    }
     // A lead reached by several routes: if the mixing happened on another route than the
     // one shown (the shortest), say so, so its transaction is not looked for on this path.
     for l in &mut leads {
@@ -268,7 +319,7 @@ pub async fn trace_bitcoin(
         min_amount,
         config,
         leads,
-        flows: t.flows,
+        flows: merge_flows(t.flows),
         labels_seen: t.labels_seen,
         stats: t.stats,
         small_branches: {
@@ -352,6 +403,9 @@ struct Tracer<'a> {
     whole_tx_seed: bool,
     /// Branches under the minimum, for the report's list of the largest.
     small: Vec<SmallBranch>,
+    /// Forward from a chosen output or payment: its address. Funds coming back to it later
+    /// (change to itself) do not make it an endpoint either.
+    start_addresses: HashSet<Address>,
 }
 
 /// A service named through labels on addresses of the same wallet.
@@ -359,6 +413,18 @@ struct NamedService {
     label: Label,
     confidence: Confidence,
     evidence: Vec<String>,
+}
+
+/// A sanctions-list entry for a person ("SDN uid …; Individual; …" in the OFAC pack): a
+/// perpetrator's own wallet, followed through like other perpetrators' wallets (and listed
+/// as a labelled address passed through), not an endpoint. Sanctioned entities (exchanges,
+/// mixers, markets) still stop the trace.
+fn sanctioned_individual(label: &Label) -> bool {
+    label.category == EntityCategory::Sanctioned
+        && label
+            .note
+            .as_deref()
+            .is_some_and(|n| n.split(';').any(|p| p.trim() == "Individual"))
 }
 
 fn label_title(label: &Label) -> String {
@@ -454,7 +520,7 @@ impl<'a> Tracer<'a> {
             // A perpetrator's or a person's labelled wallet is followed through: its
             // activity does not make it a service (a scam address that collected hundreds
             // of victim payments looks "busy").
-            if !label.category.is_endpoint() {
+            if !label.category.is_endpoint() || sanctioned_individual(&label) {
                 return None;
             }
         }
@@ -481,7 +547,7 @@ impl<'a> Tracer<'a> {
                 return Some((label_title(&label), label.category, label.claim));
             }
             // Followed through whatever its activity (see `known_endpoint`).
-            let follow = !label.category.is_endpoint();
+            let follow = !label.category.is_endpoint() || sanctioned_individual(&label);
             self.saw_label(label);
             if follow {
                 return None;
@@ -636,8 +702,20 @@ impl<'a> Tracer<'a> {
         hop == 0 && !self.whole_tx_seed
     }
 
+    /// Forward: a coin at the start (or back at the start address) is never an endpoint and
+    /// its sweep is not a service stop: the user chose to trace from there.
+    fn exempt(&self, coin: &Coin) -> bool {
+        self.is_start(coin.hop)
+            || coin
+                .address
+                .as_ref()
+                .is_some_and(|a| self.start_addresses.contains(a))
+    }
+
     fn stops_at(&self, label: &Label) -> bool {
-        label.category.is_endpoint() && label.claim.confidence() >= self.config.stop_confidence
+        label.category.is_endpoint()
+            && !sanctioned_individual(label)
+            && label.claim.confidence() >= self.config.stop_confidence
     }
 
     fn saw_label(&mut self, label: Label) {
@@ -871,6 +949,10 @@ impl<'a> Tracer<'a> {
         }
 
         let mut deferred: Vec<Coin> = Vec::new();
+        // Coins already followed. A transaction with several traced inputs is processed once
+        // per input, so a coin can be reached again after it was followed: the later part
+        // goes the same way, whatever its size (it is not a separate small branch).
+        let mut followed: HashSet<String> = HashSet::new();
         loop {
             while let Some(coin) = pop_largest(&mut pending, |c| c.amount) {
                 self.via = coin.address.clone();
@@ -880,11 +962,12 @@ impl<'a> Tracer<'a> {
                     pending: pending.len(),
                     leads: self.leads.len(),
                 });
-                if coin.amount < min_amount {
+                let coin_key = format!("{}:{}", coin.txid, coin.vout);
+                if coin.amount < min_amount && !followed.contains(&coin_key) {
                     // A small amount reaching an address already known as an endpoint still
                     // belongs to it (e.g. a test payment before the main deposit). Only what is
                     // already known is used: no extra lookups for small amounts.
-                    if !self.is_start(coin.hop)
+                    if !self.exempt(&coin)
                         && let Some(addr) = coin.address.clone()
                         && let Some((title, category, claim)) = self.known_endpoint(&addr)
                     {
@@ -914,9 +997,10 @@ impl<'a> Tracer<'a> {
                     });
                     continue;
                 }
+                followed.insert(coin_key);
                 // Endpoint at the address holding the coin (not for the seed itself: the user
                 // chose to trace from there).
-                if !self.is_start(coin.hop)
+                if !self.exempt(&coin)
                     && let Some(addr) = coin.address.clone()
                     && let Some((title, category, claim)) = self.endpoint_for(&addr).await
                 {
@@ -1037,44 +1121,109 @@ impl<'a> Tracer<'a> {
                         }
                         None => format!("Likely mixed in {}", info.kind.label()),
                     };
-                    // Each coin entering the CoinJoin gets its own edge to the transaction.
-                    self.flows.push(Flow {
-                        txid: stx.txid.clone(),
-                        hop,
-                        time,
-                        from: coin.address.clone(),
-                        to: None,
-                        from_coin: Some(format!("{}:{}", coin.txid, coin.vout)),
-                        to_coin: Some(stx.txid.clone()),
-                        amount: coin.amount,
-                        role: FlowRole::Payment,
-                        peel: false,
-                        note: Some(shape.describe()),
-                        mixed_in: self.mixed_in.clone(),
-                    });
-                    self.add_lead(
-                        LeadKind::Endpoint,
-                        title,
-                        Some(EntityCategory::Mixer),
-                        None,
-                        Some(stx.txid.clone()),
-                        None,
-                        coin.amount,
-                        time,
-                        hop,
-                        Claim::Inference {
-                            heuristic: "coinjoin".into(),
-                            confidence: info.confidence,
-                            evidence,
-                        },
-                        &path,
-                    );
+                    // This input's change, if the amounts identify it (JoinMarket-style
+                    // rounds), leaves the CoinJoin unmixed and is followed; only the rest
+                    // entered the mix.
+                    let pair = stx
+                        .inputs
+                        .iter()
+                        .position(|i| {
+                            i.prev_txid.as_deref() == Some(coin.txid.as_str())
+                                && i.prev_vout == coin.vout
+                        })
+                        .and_then(|k| change_pairs(&stx, info).into_iter().find(|p| p.input == k));
+                    let mut mixed = coin.amount;
+                    if let Some(p) = pair
+                        && let Some(out) = stx.outputs.iter().find(|o| o.index == p.output)
+                    {
+                        let v = stx.inputs[p.input].value.max(1) as u128;
+                        let change = (coin.amount as u128 * out.value as u128 / v) as u64;
+                        mixed = coin.amount - change;
+                        evidence.push(format!(
+                            "this input's change, output {} ({} sats = input − {} sats mixed {} {} sats fee), was matched by amount and followed",
+                            out.index,
+                            out.value,
+                            info.equal_value,
+                            if p.delta >= 0 { "+" } else { "−" },
+                            p.delta.unsigned_abs()
+                        ));
+                        // The change amount is arithmetic, but identifying it is an inference:
+                        // from here on amounts are not on-chain facts.
+                        let after = coin.mixed_at.clone().or_else(|| Some(stx.txid.clone()));
+                        self.flows.push(Flow {
+                            txid: stx.txid.clone(),
+                            hop,
+                            time,
+                            from: coin.address.clone(),
+                            to: out.address.clone(),
+                            from_coin: Some(format!("{}:{}", coin.txid, coin.vout)),
+                            to_coin: Some(format!("{}:{}", stx.txid, out.index)),
+                            amount: change,
+                            role: FlowRole::Change {
+                                confidence: Confidence::High,
+                            },
+                            peel: false,
+                            note: Some(format!(
+                                "change of this input in a CoinJoin, matched by amount ({})",
+                                info.kind.label()
+                            )),
+                            mixed_in: after.clone(),
+                        });
+                        push(
+                            &mut pending,
+                            &mut best,
+                            Coin {
+                                txid: stx.txid.clone(),
+                                vout: out.index,
+                                address: out.address.clone(),
+                                amount: change,
+                                hop,
+                                time,
+                                path: path.clone(),
+                                mixed_at: after,
+                            },
+                        );
+                    }
+                    if mixed > 0 {
+                        // Each coin entering the CoinJoin gets its own edge to the transaction.
+                        self.flows.push(Flow {
+                            txid: stx.txid.clone(),
+                            hop,
+                            time,
+                            from: coin.address.clone(),
+                            to: None,
+                            from_coin: Some(format!("{}:{}", coin.txid, coin.vout)),
+                            to_coin: Some(stx.txid.clone()),
+                            amount: mixed,
+                            role: FlowRole::Payment,
+                            peel: false,
+                            note: Some(shape.describe()),
+                            mixed_in: self.mixed_in.clone(),
+                        });
+                        self.add_lead(
+                            LeadKind::Endpoint,
+                            title,
+                            Some(EntityCategory::Mixer),
+                            None,
+                            Some(stx.txid.clone()),
+                            None,
+                            mixed,
+                            time,
+                            hop,
+                            Claim::Inference {
+                                heuristic: "coinjoin".into(),
+                                confidence: info.confidence,
+                                evidence,
+                            },
+                            &path,
+                        );
+                    }
                     continue;
                 }
                 // Not for the seed coin: the user chose to trace from there (a scammer's address
                 // that sweeps many victims' payments is not a service).
                 let (service, dormant_note) = at_start(
-                    self.is_start(coin.hop),
+                    self.exempt(&coin),
                     self.service_shape(&stx, &shape).await,
                     &shape,
                 );
@@ -1472,24 +1621,81 @@ impl<'a> Tracer<'a> {
                             }
                             None => format!("Likely came out of {}", info.kind.label()),
                         };
-                        self.flows_from_tx(&tx, &src, time, Some(shape.describe()));
-                        self.add_lead(
-                            LeadKind::Endpoint,
-                            title,
-                            Some(EntityCategory::Mixer),
-                            None,
-                            Some(tx.txid.clone()),
-                            None,
-                            amount,
-                            time,
-                            src.hop,
-                            Claim::Inference {
-                                heuristic: "coinjoin".into(),
-                                confidence: info.confidence,
-                                evidence,
-                            },
-                            &src.path,
-                        );
+                        // A traced output that is a participant's change (matched by amount)
+                        // came from that participant's input, not out of the mix: trace that
+                        // input back. The rest came out of the CoinJoin.
+                        let pairs = change_pairs(&tx, info);
+                        let mut rest = src.clone();
+                        rest.receivers.clear();
+                        for r in &src.receivers {
+                            let pair = r.vout().and_then(|v| pairs.iter().find(|p| p.output == v));
+                            let Some((p, input)) = pair.map(|p| (p, &tx.inputs[p.input])) else {
+                                rest.receivers.push(r.clone());
+                                continue;
+                            };
+                            let Some(prev_txid) = input.prev_txid.clone() else {
+                                rest.receivers.push(r.clone());
+                                continue;
+                            };
+                            let after = src.mixed_at.clone().or_else(|| Some(tx.txid.clone()));
+                            self.flows.push(Flow {
+                                txid: tx.txid.clone(),
+                                hop: src.hop,
+                                time,
+                                from: input.address.clone(),
+                                to: r.address.clone(),
+                                from_coin: Some(format!("{prev_txid}:{}", input.prev_vout)),
+                                to_coin: r.coin.clone(),
+                                amount: r.amount,
+                                role: FlowRole::Source,
+                                peel: false,
+                                note: Some(format!(
+                                    "change of this input in a CoinJoin, matched by amount (input − {} sats mixed {} {} sats fee)",
+                                    info.equal_value,
+                                    if p.delta >= 0 { "+" } else { "−" },
+                                    p.delta.unsigned_abs()
+                                )),
+                                mixed_in: after.clone(),
+                            });
+                            let mut path = src.path.clone();
+                            path.push(prev_txid.clone());
+                            push(
+                                &mut pending,
+                                &mut best,
+                                Source {
+                                    txid: prev_txid.clone(),
+                                    hop: src.hop + 1,
+                                    receivers: vec![Receiver {
+                                        address: input.address.clone(),
+                                        coin: Some(format!("{prev_txid}:{}", input.prev_vout)),
+                                        amount: r.amount,
+                                    }],
+                                    path,
+                                    mixed_at: after,
+                                },
+                            );
+                        }
+                        let mixed: u64 = rest.receivers.iter().map(|r| r.amount).sum();
+                        if mixed > 0 {
+                            self.flows_from_tx(&tx, &rest, time, Some(shape.describe()));
+                            self.add_lead(
+                                LeadKind::Endpoint,
+                                title,
+                                Some(EntityCategory::Mixer),
+                                None,
+                                Some(tx.txid.clone()),
+                                None,
+                                mixed,
+                                time,
+                                src.hop,
+                                Claim::Inference {
+                                    heuristic: "coinjoin".into(),
+                                    confidence: info.confidence,
+                                    evidence,
+                                },
+                                &src.path,
+                            );
+                        }
                         continue;
                     }
                     _ => {}
@@ -1727,6 +1933,27 @@ fn allocation_claim(claim: Claim, mixed_in: Option<&str>) -> Claim {
         }
         other => other,
     }
+}
+
+/// The same transfer recorded in parts (a coin reached again after it was followed) becomes
+/// one flow with the total, in the order first seen.
+fn merge_flows(flows: Vec<Flow>) -> Vec<Flow> {
+    let mut out: Vec<Flow> = Vec::with_capacity(flows.len());
+    let mut at: HashMap<String, usize> = HashMap::new();
+    for f in flows {
+        let key = format!(
+            "{}|{:?}|{:?}|{:?}|{:?}|{}|{:?}",
+            f.txid, f.from_coin, f.to_coin, f.from, f.to, f.hop, f.mixed_in
+        );
+        match at.get(&key) {
+            Some(&i) => out[i].amount += f.amount,
+            None => {
+                at.insert(key, out.len());
+                out.push(f);
+            }
+        }
+    }
+    out
 }
 
 /// Forward, the start address being swept with many others does not stop the trace: it may

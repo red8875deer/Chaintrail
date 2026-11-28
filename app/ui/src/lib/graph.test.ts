@@ -108,11 +108,12 @@ describe.each(views)("display graph: %s", (_, view) => {
     expect(all.groups.size).toBe(0);
   });
 
-  it("accounting balances and exports one CSV row per lead", () => {
+  it("accounting balances and exports one CSV row per lead, plus fees and small branches", () => {
     const r = view.report;
     const leads = r.leads.reduce((s, l) => s + l.amount, 0);
     expect(leads + r.stats.fees + r.stats.below_threshold).toBe(r.seed_amount);
-    expect(leadsCsv(view).trim().split("\r\n")).toHaveLength(r.leads.length + 1);
+    const extra = (r.stats.fees > 0 ? 1 : 0) + (r.stats.below_threshold > 0 ? 1 : 0);
+    expect(leadsCsv(view).trim().split("\r\n")).toHaveLength(r.leads.length + 1 + extra);
   });
 });
 

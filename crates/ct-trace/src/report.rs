@@ -196,7 +196,7 @@ pub struct SmallBranch {
 }
 
 /// How many small branches a report lists (largest first); the rest are only counted.
-pub const SMALL_BRANCHES_LISTED: usize = 50;
+pub const SMALL_BRANCHES_LISTED: usize = 200;
 
 /// One output of the seed transaction included in the trace.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -204,8 +204,13 @@ pub struct SeedOutput {
     pub txid: String,
     pub vout: u32,
     pub address: Option<Address>,
+    /// The output's on-chain value (sats).
     pub amount: u64,
     pub time: Option<u64>,
+    /// The part of it that is traced (less than `amount` when continuing with a share; 0 in
+    /// reports made before this field existed: read as `amount`).
+    #[serde(default)]
+    pub traced: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
