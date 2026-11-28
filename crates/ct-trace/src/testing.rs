@@ -50,6 +50,7 @@ pub fn tx(
                 script_type: Some(ScriptType::P2pkh),
                 is_coinbase: false,
                 sequence: u32::MAX,
+                witness_script: None,
             })
             .collect(),
         outputs: outputs
@@ -79,6 +80,7 @@ pub fn coinbase(id: &str, height: u64, to: &Address, value: u64) -> UtxoTx {
         script_type: None,
         is_coinbase: true,
         sequence: u32::MAX,
+        witness_script: None,
     });
     t.fee = 0;
     t

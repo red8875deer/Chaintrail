@@ -13,6 +13,7 @@ use ct_core::{
 };
 use ct_heuristics::btc::coinjoin::{change_pairs, is_standard_denomination};
 use ct_heuristics::btc::dormancy::SAMPLE_INPUTS;
+use ct_heuristics::btc::lightning::channel_close;
 use ct_heuristics::btc::{
     Dormancy, TxShape, classify, detect_change, dormancy, is_peel_step, service_from_summary,
 };
@@ -555,6 +556,36 @@ impl<'a> Tracer<'a> {
         let t = self.provider.tx(txid).await.ok()?;
         self.samples.insert(txid.to_string(), t.clone());
         Some(t)
+    }
+
+    /// For a payout: sample the largest inputs' transactions. If every sampled one is a
+    /// coinbase (at least two, or all inputs), returns (coinbase count, sampled, block heights).
+    async fn mined_inputs(&mut self, tx: &UtxoTx) -> Option<(usize, usize, Vec<String>)> {
+        let mut inputs: Vec<_> = tx.inputs.iter().filter(|i| i.prev_txid.is_some()).collect();
+        inputs.sort_by_key(|i| std::cmp::Reverse(i.value));
+        let mut prevs: Vec<String> = Vec::new();
+        for i in inputs {
+            let p = i.prev_txid.clone().expect("filtered");
+            if !prevs.contains(&p) {
+                prevs.push(p);
+            }
+            if prevs.len() == SAMPLE_INPUTS {
+                break;
+            }
+        }
+        let mut blocks = Vec::new();
+        let mut sampled = 0;
+        for p in &prevs {
+            let prev = self.sample_tx(p).await?;
+            sampled += 1;
+            if !prev.is_coinbase() {
+                return None;
+            }
+            if let Some(b) = &prev.block {
+                blocks.push(b.height.to_string());
+            }
+        }
+        (sampled >= 2 || sampled == tx.inputs.len()).then_some((sampled, sampled, blocks))
     }
 
     fn budget_left(&self, txid: &str) -> bool {
@@ -1475,18 +1506,28 @@ impl<'a> Tracer<'a> {
                     Some(t) => !best.contains_key(&format!("{t}:{}", i.prev_vout)),
                     None => true,
                 });
+                // A Lightning channel close pays out balances that can include off-chain
+                // payments: from here on amounts are allocations, like after mixing.
+                let channel = channel_close(&stx);
                 let mixed_at = coin
                     .mixed_at
                     .clone()
-                    .or_else(|| mixes.then(|| stx.txid.clone()));
+                    .or_else(|| (mixes || channel.is_some()).then(|| stx.txid.clone()));
                 self.mixed_in = mixed_at.clone();
                 let change = detect_change(&stx);
                 let peel = is_peel_step(&stx, change.as_ref());
                 if peel {
                     self.stats.peel_steps += 1;
                 }
-                let note =
-                    dormant_note.or_else(|| (shape != TxShape::Simple).then(|| shape.describe()));
+                let note = channel
+                    .map(|c| {
+                        format!(
+                            "{}: the channel's balances can include payments made off-chain, so amounts after it are allocations",
+                            c.describe()
+                        )
+                    })
+                    .or(dormant_note)
+                    .or_else(|| (shape != TxShape::Simple).then(|| shape.describe()));
                 let mut allocated = 0u64;
                 // Pro-rata shares, rounded down; the rounding remainder goes to the largest
                 // output so only the fee's own rounding is lost (unmixed amounts stay exact).
@@ -1921,8 +1962,41 @@ impl<'a> Tracer<'a> {
                     // whole transaction is the service's: drawn as the transaction, not as one
                     // of its input addresses.
                     let what = format!("funds sent in a {}", shape.describe());
-                    let (title, category, claim) = match self.name_service(&tx, false) {
-                        Some(n) => {
+                    // A payout of newly mined coins is a mining pool paying its miners: the
+                    // funds come from mining, not from deposits.
+                    let mined = if matches!(shape, TxShape::BatchPayout { .. }) {
+                        self.mined_inputs(&tx).await
+                    } else {
+                        None
+                    };
+                    let (title, category, claim) = match (mined, self.name_service(&tx, false)) {
+                        (Some((n, sampled, blocks)), named) => {
+                            let mut evidence = vec![
+                                shape.describe(),
+                                format!(
+                                    "{n} of {sampled} sampled inputs are newly mined coins (coinbase outputs of block{} {})",
+                                    if blocks.len() == 1 { "" } else { "s" },
+                                    blocks.join(", ")
+                                ),
+                            ];
+                            let name = named.map(|x| {
+                                evidence.extend(x.evidence);
+                                label_title(&x.label)
+                            });
+                            (
+                                format!(
+                                    "Likely mining pool payout{}: newly mined coins",
+                                    name.map(|n| format!(" ({n})")).unwrap_or_default()
+                                ),
+                                EntityCategory::MiningPool,
+                                Claim::Inference {
+                                    heuristic: "service.mining_payout".into(),
+                                    confidence: Confidence::High,
+                                    evidence,
+                                },
+                            )
+                        }
+                        (None, Some(n)) => {
                             let mut evidence = vec![shape.describe()];
                             evidence.extend(n.evidence);
                             (
@@ -1935,7 +2009,7 @@ impl<'a> Tracer<'a> {
                                 },
                             )
                         }
-                        None => (
+                        (None, None) => (
                             format!("Likely service: {what}"),
                             EntityCategory::UnknownService,
                             Claim::Inference {
@@ -1973,6 +2047,7 @@ impl<'a> Tracer<'a> {
                     .receivers
                     .iter()
                     .any(|r| r.coin.as_deref() == Some(tx.txid.as_str()));
+                let channel = channel_close(&tx);
                 let untraced_output = !whole
                     && tx
                         .outputs
@@ -1987,12 +2062,19 @@ impl<'a> Tracer<'a> {
                 let mixed_at = src
                     .mixed_at
                     .clone()
-                    .or_else(|| untraced_output.then(|| tx.txid.clone()));
+                    .or_else(|| (untraced_output || channel.is_some()).then(|| tx.txid.clone()));
                 self.mixed_in = mixed_at.clone();
                 let largest = (0..tx.inputs.len()).max_by_key(|&i| tx.inputs[i].value);
                 let mut per_input = vec![0u64; tx.inputs.len()];
-                let note =
-                    dormant_note.or_else(|| (shape != TxShape::Simple).then(|| shape.describe()));
+                let note = channel
+                    .map(|c| {
+                        format!(
+                            "{}: the channel's balances can include payments made off-chain, so amounts after it are allocations",
+                            c.describe()
+                        )
+                    })
+                    .or(dormant_note)
+                    .or_else(|| (shape != TxShape::Simple).then(|| shape.describe()));
                 for r in &src.receivers {
                     let mut shares: Vec<u64> = tx
                         .inputs
@@ -2212,6 +2294,9 @@ mod tests {
         assert!(matches!(plain, StopReason::Error(e) if e.contains("not found")));
         let named = stop_reason(&ProviderError::NotFound("a".into()), "address check failed");
         assert!(matches!(named, StopReason::Error(e) if e.starts_with("address check failed")));
-        assert_eq!(stop_reason(&ProviderError::Cancelled, ""), StopReason::Stopped);
+        assert_eq!(
+            stop_reason(&ProviderError::Cancelled, ""),
+            StopReason::Stopped
+        );
     }
 }

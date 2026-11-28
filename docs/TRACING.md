@@ -159,6 +159,18 @@ Reference: Kappos et al., *How to Peel a Million*, USENIX Security 2022.
 | Generic (JoinMarket, Wasabi 1.x etc.) | ≥ 3 equal outputs, at least as many inputs but at most 6 per equal output, inputs from 2+ addresses, ≤ one change per mixed output (outputs at any repeated value count as mixed: Wasabi 1.x pays several levels v, ~2v, ~4v…) | Medium (High with ≥ 5 equal) |
 | Chip split (ChipMixer-style) | ≥ 5 outputs of one value 2ᵏ × 0.001 BTC, nothing else but at most one small remainder, inputs from 2+ addresses | Medium |
 
+**Lightning channels.** A transaction whose single input spends a 2-of-2 multisig (from its
+witness script) and that is a commitment transaction (BOLT 3 locktime and sequence markers)
+or pays at most two outputs is a likely channel close. While a channel is open, payments move
+off-chain, so the balances its close pays are not the coins that went in: from the close on,
+amounts are allocations (Medium) and the edge says why. Other 2-of-2 wallets exist, so this
+is a likelihood, not a fact; funding outputs are only recognised when they are spent.
+
+**Mining pool payouts.** Traced back, a batch payout whose sampled inputs (up to five, the
+largest) are all newly mined coins (coinbase outputs) is a mining pool paying its miners:
+the lead is "Likely mining pool payout: newly mined coins" (High) with the blocks as
+evidence, not an unnamed service.
+
 **Change in a CoinJoin.** In rounds with a single equal amount *e* (JoinMarket style), a
 participant's change is identified by arithmetic: for an input of value *v*, exactly one
 output of value *v − e* give or take the fees (at most 1% of *e*, or 10,000 sats) that no

@@ -4,6 +4,7 @@ pub mod change;
 pub mod cluster;
 pub mod coinjoin;
 pub mod dormancy;
+pub mod lightning;
 pub mod service;
 pub mod shape;
 

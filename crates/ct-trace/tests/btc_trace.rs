@@ -708,6 +708,76 @@ async fn the_budget_also_limits_lookups() {
 }
 
 #[tokio::test]
+async fn a_payout_of_newly_mined_coins_is_a_mining_pool() {
+    // Two coinbase outputs paid out to 60 miners: traced back, the funds come from mining.
+    let cb1 = coinbase(&txid(21), 100, &addr(9), 3 * BTC);
+    let cb2 = coinbase(&txid(22), 101, &addr(9), 3 * BTC);
+    let outs: Vec<(ct_core::Address, u64)> =
+        (0..60u8).map(|i| (addr(100 + i), 9_000_000)).collect();
+    let outs: Vec<(&ct_core::Address, u64)> = outs.iter().map(|(a, v)| (a, *v)).collect();
+    let payout = tx(
+        &txid(23),
+        110,
+        &[
+            (&txid(21), 0, &addr(9), 3 * BTC),
+            (&txid(22), 0, &addr(9), 3 * BTC),
+        ],
+        &outs,
+    );
+    let p = MemoryBitcoin::new([cb1, cb2, payout]);
+    let r = run(
+        &p,
+        Seed::Output {
+            txid: txid(23),
+            vout: 0,
+        },
+        TraceConfig {
+            direction: Direction::Backward,
+            ..forward()
+        },
+    )
+    .await;
+    let l = &r.leads[0];
+    assert_eq!(l.category, Some(EntityCategory::MiningPool));
+    assert!(l.title.contains("mining pool"), "{}", l.title);
+}
+
+#[tokio::test]
+async fn a_lightning_channel_close_makes_amounts_allocations() {
+    // The traced coin funds a channel (2-of-2); its close pays the two parties' balances,
+    // which can include off-chain payments: not on-chain facts.
+    let mut close = tx(
+        &txid(2),
+        101,
+        &[(&txid(1), 0, &addr(2), BTC)],
+        &[(&addr(3), 60_000_000), (&addr(4), 40_000_000 - 1_000)],
+    );
+    close.inputs[0].witness_script = Some(format!(
+        "OP_PUSHNUM_2 OP_PUSHBYTES_33 02{a} OP_PUSHBYTES_33 03{a} OP_PUSHNUM_2 OP_CHECKMULTISIG",
+        a = "11".repeat(32)
+    ));
+    let p = MemoryBitcoin::new([victim_payment(), close]);
+    let r = run(
+        &p,
+        Seed::Output {
+            txid: txid(1),
+            vout: 0,
+        },
+        forward(),
+    )
+    .await;
+    for l in &r.leads {
+        assert_eq!(l.mixed_in.as_deref(), Some(txid(2).as_str()), "{l:?}");
+        assert!(l.confidence <= Confidence::Medium);
+    }
+    assert!(
+        r.flows
+            .iter()
+            .any(|f| f.note.as_deref().is_some_and(|n| n.contains("Lightning")))
+    );
+}
+
+#[tokio::test]
 async fn deposit_consolidation_is_a_service_endpoint() {
     let t2 = tx(
         &txid(2),

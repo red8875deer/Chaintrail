@@ -49,6 +49,10 @@ pub struct TxInput {
     pub script_type: Option<ScriptType>,
     pub is_coinbase: bool,
     pub sequence: u32,
+    /// For a P2WSH (or P2SH-P2WSH) spend: the witness script, as assembly. Identifies e.g.
+    /// 2-of-2 multisig (Lightning channels). `None` when not known (older cached data).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub witness_script: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -381,7 +381,8 @@ export function LeadsPanel({
         {r.config.seed_share !== null && r.config.seed_share !== undefined && (
           <p className="small">
             of <Btc sats={r.seed_outputs.reduce((s, o) => s + o.amount, 0)} /> in this output: continued from an
-            earlier trace, following only its share.
+            earlier trace, following only its share. Percentages below are of this amount, not of the earlier
+            trace's.
           </p>
         )}
         {onGoToStart ? (

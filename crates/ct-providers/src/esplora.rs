@@ -180,6 +180,8 @@ pub(crate) struct EVin {
     prevout: Option<EVout>,
     is_coinbase: bool,
     sequence: u32,
+    #[serde(default)]
+    inner_witnessscript_asm: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -210,6 +212,7 @@ impl ETx {
                         script_type: None,
                         is_coinbase: true,
                         sequence: i.sequence,
+                        witness_script: None,
                     });
                 }
                 let prev = i
@@ -223,6 +226,7 @@ impl ETx {
                     script_type: Some(prev.script_type()),
                     is_coinbase: false,
                     sequence: i.sequence,
+                    witness_script: i.inner_witnessscript_asm,
                 })
             })
             .collect::<std::result::Result<Vec<_>, String>>()?;
