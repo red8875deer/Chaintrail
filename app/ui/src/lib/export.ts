@@ -2,7 +2,7 @@
 
 import { call } from "../api/client";
 import type { StatusView, TraceView } from "../api/types";
-import { csvCell, formatBtc, formatShare, formatUtc } from "./format";
+import { csvCell, formatBtc, formatUtc } from "./format";
 import { categoryName, describeClaim, leadKindName } from "./meaning";
 
 function download(name: string, data: BlobPart, type: string) {
@@ -85,7 +85,27 @@ export async function exportJson(view: TraceView) {
   download(`${baseName(view)}.json`, JSON.stringify({ chaintrail_export: meta, ...view }, null, 2), "application/json");
 }
 
-export function leadsCsv(view: TraceView): string {
+/** Sats as a plain BTC number for data tools: no digit grouping, 8 decimals. */
+export function plainBtc(sats: number): string {
+  const v = BigInt(Math.trunc(sats));
+  const neg = v < 0n;
+  const a = neg ? -v : v;
+  return `${neg ? "-" : ""}${a / 100_000_000n}.${(a % 100_000_000n).toString().padStart(8, "0")}`;
+}
+
+/** A share as a plain fraction with 6 decimals ("0.777100"), from integers only. */
+export function plainShare(part: number, total: number): string {
+  if (total <= 0) return "0.000000";
+  const millionths = (BigInt(Math.trunc(part)) * 2_000_000n + BigInt(Math.trunc(total))) / (2n * BigInt(Math.trunc(total)));
+  return `${millionths / 1_000_000n}.${(millionths % 1_000_000n).toString().padStart(6, "0")}`;
+}
+
+/**
+ * One row per lead, header on the first row, plain numbers (no digit grouping, shares as
+ * fractions) so data tools and spreadsheets read it directly. With `meta`, every row also
+ * says when, with what and how the trace was made.
+ */
+export function leadsCsv(view: TraceView, meta?: Provenance): string {
   const r = view.report;
   const header = [
     "lead",
@@ -94,7 +114,7 @@ export function leadsCsv(view: TraceView): string {
     "address",
     "transaction",
     "amount_btc",
-    "share",
+    "share_of_traced",
     "hops",
     "first_seen_utc",
     "confidence",
@@ -104,6 +124,7 @@ export function leadsCsv(view: TraceView): string {
     "path",
     "all_transactions",
     "evidence_or_source",
+    ...(meta ? ["generated_utc", "app_version", "data_source", "trace_settings"] : []),
   ];
   // Every transfer into an endpoint address (forward) or out of a source (backward), oldest
   // first: the lead's own transaction is on its shortest route, which can be a small test
@@ -125,8 +146,8 @@ export function leadsCsv(view: TraceView): string {
       l.category ? categoryName(l.category) : "",
       l.address?.value ?? "",
       l.txid ?? "",
-      formatBtc(l.amount, 8),
-      formatShare(l.amount, r.seed_amount),
+      plainBtc(l.amount),
+      plainShare(l.amount, r.seed_amount),
       l.hops,
       l.first_time !== null ? formatUtc(l.first_time) : "",
       l.confidence,
@@ -136,33 +157,22 @@ export function leadsCsv(view: TraceView): string {
       l.path.join(" > "),
       transfers(l),
       [...c.evidence, c.url ?? ""].filter(Boolean).join(" | "),
+      ...(meta
+        ? [
+            meta.generated_at,
+            meta.app_version ?? "",
+            `${meta.data_source ?? "unknown source"}${meta.label_data ? `; labels: ${meta.label_data.packs} packs, ${meta.label_data.labelled_addresses} addresses` : ""}`,
+            meta.settings,
+          ]
+        : []),
     ];
   });
   return [header, ...rows].map((row) => row.map(csvCell).join(",")).join("\r\n") + "\r\n";
 }
 
-/**
- * A "#" comment line for the top of a CSV, kept to one unquoted cell: spreadsheet programs
- * show it as written, and tools that skip "#" lines skip it. Digit grouping is dropped and
- * other commas become semicolons.
- */
-export function csvComment(text: string): string {
-  return `# ${text
-    .replace(/(\d),(?=\d{3}\b)/g, "$1")
-    .replace(/,/g, ";")
-    .replace(/"/g, "'")
-    .replace(/[\r\n]+/g, " ")}`;
-}
-
-/** The CSV with a few "#" lines of provenance before the header row. */
+/** The CSV with provenance columns on every row. */
 export function leadsCsvWithProvenance(view: TraceView, meta: Provenance): string {
-  const lines = [
-    `ChainTrail leads export; generated ${meta.generated_at}${meta.app_version ? `; app ${meta.app_version}` : ""}`,
-    `Trace: ${meta.settings}`,
-    `Data: ${meta.data_source ?? "unknown source"}${meta.label_data ? `; labels: ${meta.label_data.packs} packs; ${meta.label_data.labelled_addresses} addresses` : ""}`,
-    ...meta.notes,
-  ];
-  return lines.map(csvComment).join("\r\n") + "\r\n" + leadsCsv(view);
+  return leadsCsv(view, meta);
 }
 
 export function exportCsv(view: TraceView) {

@@ -97,6 +97,7 @@ export function RequestBlock({ view, node, lead }: { view: TraceView; node: Grap
   if (deposits.length === 0) return null;
 
   const claim = describeClaim(lead.claim);
+  const unknownOwner = lead.category === "unknown_service" || lead.category === null;
   const tracedTotal = deposits.reduce((s, d) => s + d.traced, 0);
   const single = deposits.length === 1 ? deposits[0]! : null;
   const later = forward && lead.txid && !deposits.some((d) => d.txid === lead.txid) ? lead.txid : null;
@@ -113,6 +114,7 @@ export function RequestBlock({ view, node, lead }: { view: TraceView; node: Grap
     `Generated: ${formatUtc(Date.now() / 1000)}`,
     `Trace: ${forward ? "forward" : "backward"} from ${r.seed} (${formatBtc(r.seed_amount, 8)} BTC)`,
     `Lead: ${lead.title}${lead.category ? ` (${categoryName(lead.category)})` : ""}`,
+    ...(unknownOwner ? ["Owner: unknown (service detected by behaviour, not named): identify it before sending a request"] : []),
     `Basis: ${claim.kind}. ${claim.headline}`,
     ...claim.evidence.map((e) => `  - ${e}`),
     ...(claim.url ? [`Source: ${claim.url}${claim.asOf ? ` (as of ${claim.asOf})` : ""}`] : []),
@@ -136,6 +138,12 @@ export function RequestBlock({ view, node, lead }: { view: TraceView; node: Grap
   return (
     <section className="request" aria-label="For a records request">
       <h4>For a records request</h4>
+      {unknownOwner && (
+        <p className="callout small">
+          Owner unknown: this service was detected by its behaviour, not named. Identify who runs it (labels, its other
+          activity, a commercial or law-enforcement source) before sending a request.
+        </p>
+      )}
       <div className="request-actions">
         {!single && deposits.length > SHOWN && (
           <button type="button" className="btn subtle" onClick={() => setAll((a) => !a)}>

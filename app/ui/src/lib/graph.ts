@@ -731,3 +731,46 @@ export function graphStyle(p: Palette): StylesheetJsonBlock[] {
     },
   ];
 }
+
+/**
+ * The main route from the start to a report node (largest transfer at each step), as report
+ * node and edge ids: what has to be drawn to show that node in context.
+ */
+export function routeToNode(view: TraceView, id: string): { nodes: Set<string>; edges: Set<string> } {
+  const fwd = view.report.direction === "forward";
+  const byId = new Map(view.graph.nodes.map((n) => [n.id, n]));
+  const nodes = new Set([id]);
+  const edges = new Set<string>();
+  let cur = id;
+  for (let i = 0; i < 500 && !byId.get(cur)?.seed; i++) {
+    let best: GraphEdge | undefined;
+    for (const e of view.graph.edges)
+      if (e.source !== e.target && (fwd ? e.target : e.source) === cur && (!best || e.amount > best.amount)) best = e;
+    if (!best) break;
+    edges.add(best.id);
+    const prev = fwd ? best.source : best.target;
+    if (nodes.has(prev)) break;
+    nodes.add(prev);
+    cur = prev;
+  }
+  return { nodes, edges };
+}
+
+/** Report nodes matching a search (address, transaction id, name), best match first. */
+export function findNodes(view: TraceView, query: string): GraphNode[] {
+  const q = query.trim().toLowerCase();
+  if (q.length < 4) return [];
+  const score = (n: GraphNode) => {
+    const ids = [n.address, n.txid].filter(Boolean).map((s) => s!.toLowerCase());
+    if (ids.includes(q)) return 3;
+    if (ids.some((s) => s.startsWith(q) || s.endsWith(q))) return 2;
+    if (ids.some((s) => s.includes(q)) || n.label.toLowerCase().includes(q) || (n.entity ?? "").toLowerCase().includes(q))
+      return 1;
+    return 0;
+  };
+  return view.graph.nodes
+    .map((n) => ({ n, s: score(n) }))
+    .filter((x) => x.s > 0)
+    .sort((a, b) => b.s - a.s || Math.max(b.n.amount_in, b.n.amount_out) - Math.max(a.n.amount_in, a.n.amount_out))
+    .map((x) => x.n);
+}

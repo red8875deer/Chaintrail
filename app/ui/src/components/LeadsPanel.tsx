@@ -323,6 +323,7 @@ export function LeadsPanel({
   selectedLead,
   onSelectLead,
   onClearLead,
+  onGoToStart,
   onLowerMinimum,
 }: {
   view: TraceView;
@@ -330,6 +331,8 @@ export function LeadsPanel({
   onSelectLead: (i: number) => void;
   /** Esc in the list: no lead selected. */
   onClearLead?: () => void;
+  /** Show the start of the trace on the graph. */
+  onGoToStart?: () => void;
   /** Trace again with a lower minimum branch size. */
   onLowerMinimum?: () => void;
 }) {
@@ -368,9 +371,15 @@ export function LeadsPanel({
             earlier trace, following only its share.
           </p>
         )}
-        <p className="muted small mono" title={r.seed}>
-          {r.seed.length > 40 ? `${r.seed.slice(0, 18)}…${r.seed.slice(-18)}` : r.seed}
-        </p>
+        {onGoToStart ? (
+          <button type="button" className="linklike small mono" title={`${r.seed}: show on the graph`} onClick={onGoToStart}>
+            {r.seed.length > 40 ? `${r.seed.slice(0, 18)}…${r.seed.slice(-18)}` : r.seed}
+          </button>
+        ) : (
+          <p className="muted small mono" title={r.seed}>
+            {r.seed.length > 40 ? `${r.seed.slice(0, 18)}…${r.seed.slice(-18)}` : r.seed}
+          </p>
+        )}
       </section>
 
       <Exposure view={view} filter={filter} onFilter={setFilter} onLowerMinimum={onLowerMinimum} />

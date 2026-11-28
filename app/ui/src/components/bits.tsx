@@ -113,9 +113,20 @@ export function Id({
   );
 }
 
+/** Raw provider and parser messages in words an investigator can act on. */
+export function friendlyError(message: string): string {
+  if (/\b429\b|rate.?limit|too many requests/i.test(message))
+    return "The free data source (mempool.space) is limiting requests right now. Wait a minute and try again: what was already fetched is kept, so the next try is faster.";
+  if (/\b5\d\d\b|bad gateway|service unavailable|timed? ?out/i.test(message))
+    return `The free data source did not answer (${message}). Try again in a moment.`;
+  if (/invalid character|invalid checksum|unknown address format|not a valid address/i.test(message))
+    return "That is not a Bitcoin address or transaction id. Check for missing or extra characters.";
+  return message;
+}
+
 export function ErrorBox({ error }: { error: unknown }) {
   if (!error) return null;
-  const message = error instanceof ApiError || error instanceof Error ? error.message : String(error);
+  const message = friendlyError(error instanceof ApiError || error instanceof Error ? error.message : String(error));
   return (
     <div className="error" role="alert">
       {message}

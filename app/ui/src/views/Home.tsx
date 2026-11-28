@@ -20,7 +20,8 @@ const EXAMPLES = [
       txid: "3f036ff88bb851b57a1e28780dbce35a6457a8b57995c095b55b3b0cf48ba9fd",
       vout: 0,
       direction: "backward" as const,
-      maxHops: 3,
+      // As the golden case: seizure → two self-transfers → the 2013 transfer (4 hops).
+      maxHops: 4,
       maxTxs: 25,
       run: true,
     },
@@ -55,6 +56,7 @@ export function Home() {
             <p className="muted small">
               See an address's balance, its history and any labels: sanctions lists, exchanges, known scams.
             </p>
+            <p className="small">Paste it in the search box at the top.</p>
           </div>
           <div className="path-card">
             <h3>Check who owns it</h3>

@@ -397,6 +397,8 @@ export interface GraphView {
 export interface TraceView {
   report: TraceReport;
   graph: GraphView;
+  /** When the trace was run (unix seconds; absent in old recordings). */
+  generated_at?: number;
 }
 
 /** Progress events emitted by the desktop app during a trace ("trace_progress"). */

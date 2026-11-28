@@ -25,11 +25,18 @@ export function LabelsView({ address: initial }: { address?: string }) {
     if (initial) void lookup(initial);
   }, [initial]);
 
-  const [form, setForm] = useState<AddLabelRequest>({
+  // No defaults for category and confidence: a service label at Medium or High stops every
+  // later trace at that address, so it must be a choice, not a slip.
+  const [form, setForm] = useState<
+    Omit<AddLabelRequest, "category" | "confidence"> & {
+      category: AddLabelRequest["category"] | "";
+      confidence: AddLabelRequest["confidence"] | "";
+    }
+  >({
     address: initial ?? "",
     entity: "",
-    category: "exchange",
-    confidence: "medium",
+    category: "",
+    confidence: "",
     note: "",
     source: "",
   });
@@ -39,9 +46,15 @@ export function LabelsView({ address: initial }: { address?: string }) {
     e.preventDefault();
     setAddError(null);
     setAdded(null);
+    if (!form.category || !form.confidence) {
+      setAddError(new Error("Choose a category and how sure you are."));
+      return;
+    }
     try {
       const labels = await call("label_add", {
         ...form,
+        category: form.category,
+        confidence: form.confidence,
         note: form.note?.trim() || null,
         source: form.source?.trim() || null,
       });
@@ -106,7 +119,11 @@ export function LabelsView({ address: initial }: { address?: string }) {
 
         <section className="panel" style={{ display: "grid", gap: 12 }}>
           <h2>Add your own label</h2>
-          <p className="muted small">Saved on this computer only, in your labels folder. Your labels win ties with built-in ones.</p>
+          <p className="muted small">
+            Saved on this computer only, in your labels folder. Your labels win ties with built-in ones. A service label
+            (exchange, mixer, payment service…) at Medium or High stops every later trace at this address; perpetrators'
+            and individuals' wallets are followed through.
+          </p>
           <form onSubmit={add} style={{ display: "grid", gap: 12 }}>
             <div className="form-grid">
               <label className="field" style={{ gridColumn: "1 / -1" }}>
@@ -119,7 +136,14 @@ export function LabelsView({ address: initial }: { address?: string }) {
               </label>
               <label className="field">
                 <span>Category</span>
-                <select value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value as EntityCategory })}>
+                <select
+                  required
+                  value={form.category}
+                  onChange={(e) => setForm({ ...form, category: e.target.value as EntityCategory })}
+                >
+                  <option value="" disabled>
+                    Choose…
+                  </option>
                   {CATEGORY_ORDER.map((c) => (
                     <option key={c} value={c}>
                       {CATEGORY_NAMES[c]}
@@ -130,9 +154,13 @@ export function LabelsView({ address: initial }: { address?: string }) {
               <label className="field">
                 <span>How sure are you?</span>
                 <select
+                  required
                   value={form.confidence}
                   onChange={(e) => setForm({ ...form, confidence: e.target.value as AddLabelRequest["confidence"] })}
                 >
+                  <option value="" disabled>
+                    Choose…
+                  </option>
                   <option value="high">High: confirmed by the owner or an official source</option>
                   <option value="medium">Medium: strong evidence</option>
                   <option value="low">Low: a hint only (never stops a trace)</option>

@@ -7,6 +7,7 @@ import { type Display, edgeById, isGroupId, leadPath, nodeById, nodeForLead } fr
 import { categoryName, describeClaim, leadKindExplanation, leadKindName, roleText } from "../lib/meaning";
 import { type TraceParams, href } from "../lib/route";
 import { Basis, Btc, CategoryTag, Id, Meter } from "./bits";
+import { FreezeBlock } from "./FreezeBlock";
 import { RequestBlock, useOnChainAmount } from "./RequestBlock";
 import type { Selection } from "./GraphCanvas";
 
@@ -374,6 +375,71 @@ function EdgeDetails({ view, edgeId, onClose }: { view: TraceView; edgeId: strin
     );
 }
 
+const DAY = 86_400;
+/** Gaps at least this long on a route are pointed out (funds sat still). */
+const LONG_GAP_DAYS = 30;
+
+function days(seconds: number): string {
+  const d = Math.round(seconds / DAY);
+  return d < 1 ? "less than a day" : d === 1 ? "1 day" : d < 60 ? `${d} days` : `${Math.round(d / 30.4)} months`;
+}
+
+/** When traced funds reached this address and when they left it. */
+function NodeTimes({ view, node }: { view: TraceView; node: GraphNode }) {
+  if (!node.address) return null;
+  const a = node.address;
+  const ins = view.report.flows.filter((f) => f.to?.value === a && f.from?.value !== a && f.time !== null).map((f) => f.time!);
+  const outs = view.report.flows.filter((f) => f.from?.value === a && f.to?.value !== a && f.time !== null).map((f) => f.time!);
+  if (ins.length === 0 && outs.length === 0) return null;
+  const first = ins.length ? Math.min(...ins) : null;
+  const last = outs.length ? Math.max(...outs) : null;
+  const left = outs.length ? Math.min(...outs) : null;
+  return (
+    <p className="small">
+      {first !== null && <>Traced funds first arrived {formatUtc(first)}. </>}
+      {left !== null && (
+        <>
+          They left {formatUtc(left)}
+          {last !== null && last !== left ? ` (last ${formatUtc(last)})` : ""}
+          {first !== null && left >= first ? `, ${days(left - first)} later` : ""}.
+        </>
+      )}
+    </p>
+  );
+}
+
+/** The route to a lead as dated steps, with long pauses pointed out. */
+function RouteTimeline({ view, lead }: { view: TraceView; lead: Lead }) {
+  const r = view.report;
+  const timeOf = (txid: string) => {
+    const t = r.flows.filter((f) => f.txid === txid && f.time !== null).map((f) => f.time!);
+    if (t.length) return Math.min(...t);
+    return r.seed_outputs.find((o) => o.txid === txid)?.time ?? null;
+  };
+  const steps = lead.path.map((txid) => ({ txid, time: timeOf(txid) }));
+  return (
+    <details className="route-timeline" open={steps.length <= 6}>
+      <summary className="small">
+        Route in time ({steps.length} transactions{steps[0]?.time && steps.at(-1)?.time ? `, ${days(Math.abs(steps.at(-1)!.time! - steps[0]!.time!))}` : ""})
+      </summary>
+      <ol className="evidence">
+        {steps.map((st, i) => {
+          const prev = i > 0 ? steps[i - 1]!.time : null;
+          const gap = st.time !== null && prev !== null ? Math.abs(st.time - prev) : null;
+          return (
+            <li key={`${st.txid}-${i}`}>
+              {formatUtc(st.time, "unconfirmed")} <Id value={st.txid} short href={href({ page: "tx", txid: st.txid })} />
+              {gap !== null && gap >= LONG_GAP_DAYS * DAY && (
+                <strong className="small"> · funds sat {days(gap)} before this</strong>
+              )}
+            </li>
+          );
+        })}
+      </ol>
+    </details>
+  );
+}
+
 function NodeDetails({
   view,
   selection,
@@ -451,6 +517,13 @@ function NodeDetails({
         )}
       </div>
       {next?.caution && <p className="small muted">{next.caution}</p>}
+      {/* What the investigator sends out comes next, before the explanations. */}
+      {lead && lead.kind.kind === "endpoint" && lead.category !== "mixer" && (
+        <RequestBlock view={view} node={node} lead={lead} />
+      )}
+      {here.some((i) => r.leads[i]?.kind.kind === "at_rest") && (
+        <FreezeBlock view={view} node={node} leads={here.map((i) => r.leads[i]!).filter(Boolean)} />
+      )}
       {lead && (
         <div style={{ display: "grid", gap: 6 }}>
           <p>
@@ -484,10 +557,9 @@ function NodeDetails({
           )}
         </div>
       )}
-      {lead && lead.kind.kind === "endpoint" && lead.category !== "mixer" && (
-        <RequestBlock view={view} node={node} lead={lead} />
-      )}
       {!lead && seen && <ClaimExplained claim={seen.claim} />}
+      <NodeTimes view={view} node={node} />
+      {lead && lead.path.length > 1 && <RouteTimeline view={view} lead={lead} />}
       <dl className="facts" hidden={node.amount_in === 0 && node.amount_out === 0}>
         <div className="fact">
           <dt>Traced funds in</dt>

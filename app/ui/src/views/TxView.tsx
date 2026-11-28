@@ -16,7 +16,8 @@ function Who({ address, label, script }: { address: string | null; label: LabelV
         <span className="muted small">No address ({script ?? "unknown"} script)</span>
       )}
       {label && (
-        <span className="lead-meta">
+        <span className="lead-meta" title={`Third-party label from ${label.source}: a lead, not proof`}>
+          <span className="basis attribution">Label</span>
           <strong style={{ color: "var(--ink)" }}>{label.entity}</strong>
           <CategoryTag category={label.category} />
           <Meter confidence={label.confidence} />

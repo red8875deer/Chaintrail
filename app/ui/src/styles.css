@@ -1336,3 +1336,78 @@ table.ledger a:hover,
 .exposure-row.static {
   cursor: default;
 }
+
+.find {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-right: auto;
+}
+.find input {
+  width: 18ch;
+  font-family: var(--mono);
+  font-size: 0.8rem;
+  padding: 4px 8px;
+}
+.linklike {
+  background: none;
+  border: 0;
+  padding: 0;
+  color: var(--trail);
+  text-align: left;
+  cursor: pointer;
+  text-decoration: underline dotted;
+  overflow-wrap: anywhere;
+}
+.route-timeline summary {
+  cursor: pointer;
+}
+
+/* Visible only when focused: keyboard users jump past the form and graph. */
+.skip-link {
+  position: absolute;
+  left: 12px;
+  top: -60px;
+  z-index: 20;
+  padding: 6px 12px;
+  background: var(--surface);
+  border: 2px solid var(--amber);
+  border-radius: var(--radius-s);
+  color: var(--ink);
+  font: inherit;
+}
+.skip-link:focus {
+  top: 8px;
+}
+.side-scroll:focus {
+  outline: none;
+}
+
+/* Touch: a locked graph lets swipes scroll the page. */
+.canvas.locked,
+.canvas.locked canvas {
+  touch-action: pan-y !important;
+}
+.graph-lock {
+  position: absolute;
+  right: 12px;
+  top: 12px;
+  z-index: 5;
+}
+.page h1.mono,
+h1.mono {
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+
+.mock-banner {
+  margin: 0;
+  padding: 4px 12px;
+  background: var(--amber-wash);
+  border-bottom: 1px solid var(--amber);
+  font-size: 0.8rem;
+  text-align: center;
+}
+.app:has(> .mock-banner) {
+  grid-template-rows: auto auto 1fr;
+}

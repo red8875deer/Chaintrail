@@ -277,7 +277,7 @@ const MAX_REMOVED = 6;
  * that node rightwards moves right as a block (nothing else moves). Returns false if money
  * would still flow right to left; the caller then lays the whole graph out again.
  */
-function placeNear(cy: Core, added: cytoscape.NodeCollection): boolean {
+function placeNear(cy: Core, added: cytoscape.NodeCollection, pinned: ReadonlySet<string> = new Set()): boolean {
   type Box = { x1: number; y1: number; x2: number; y2: number };
   type N = cytoscape.NodeSingular;
   const box = (n: N, at?: Position): Box => {
@@ -360,6 +360,7 @@ function placeNear(cy: Core, added: cytoscape.NodeCollection): boolean {
     if (!need) break;
     const { at, dx } = need;
     for (const m of old) {
+      if (pinned.has(m.id())) continue;
       const p = m.position();
       if (p.x >= at - 1) m.position({ x: p.x + dx, y: p.y });
     }
@@ -500,6 +501,8 @@ export function GraphCanvas({
   const focusRef = useRef(focusId);
   focusRef.current = focusId;
   const [arranging, setArranging] = useState(false);
+  /** Positions of nodes the investigator dragged. */
+  const pinned = useRef(new Map<string, Position>());
 
   // Create the graph once.
   useEffect(() => {
@@ -519,7 +522,11 @@ export function GraphCanvas({
     });
     cy.on("mouseover", "edge", (e) => e.target.addClass("hover"));
     cy.on("mouseout", "edge", (e) => e.target.removeClass("hover"));
-    cy.on("dragfree", "node", () => routeAroundNodes(cy));
+    // A node the investigator moved stays where it was put (until "Reset layout").
+    cy.on("dragfree", "node", (e) => {
+      pinned.current.set(e.target.id(), { ...e.target.position() });
+      routeAroundNodes(cy);
+    });
     // The canvas changes size with the strips around it (notice, tools), not only the window.
     const ro = new ResizeObserver(() => cy.resize());
     ro.observe(host.current);
@@ -533,6 +540,7 @@ export function GraphCanvas({
       // The whole graph, however small: labels too small to read are left out.
       fit: () => view(cy, cy.elements(), null, true, true),
       relayout: () => {
+        pinned.current.clear();
         cy.nodes().stop(true, true);
         const before = new Map(cy.nodes().map((n) => [n.id(), { ...n.position() }]));
         const finish = () => {
@@ -613,7 +621,18 @@ export function GraphCanvas({
     });
     const added = cy.nodes().filter((n) => !before.has(n.id()));
     const removed = [...before.keys()].filter((id) => cy.getElementById(id).empty()).length;
-    if (nodesChanged && !first && removed <= MAX_REMOVED && added.length <= MAX_PLACED && placeNear(cy, added)) {
+    const pins = () =>
+      cy.nodes().forEach((n) => {
+        const p = pinned.current.get(n.id());
+        if (p) n.position(p);
+      });
+    if (
+      nodesChanged &&
+      !first &&
+      removed <= MAX_REMOVED &&
+      added.length <= MAX_PLACED &&
+      placeNear(cy, added, new Set(pinned.current.keys()))
+    ) {
       // A few nodes revealed (e.g. the route to a selected lead): place them next to what is
       // already drawn and move nothing else. "Reset layout" gives the full layout again.
       added.forEach((n) => {
@@ -638,6 +657,7 @@ export function GraphCanvas({
             const p = pos.get(n.id());
             if (p) n.position(p);
           });
+          pins();
         });
         routeAroundNodes(cy);
         const onPath = cy.elements(".path");
@@ -649,6 +669,7 @@ export function GraphCanvas({
       return;
     } else if (nodesChanged) {
       cy.layout(LAYOUT as unknown as cytoscape.LayoutOptions).run();
+      pins();
       // New nodes appear from a neighbour that was already drawn.
       cy.nodes().forEach((n) => {
         if (before.has(n.id())) return;
@@ -662,6 +683,18 @@ export function GraphCanvas({
     // Re-route only when lines were added or removed (labels changing alone keep their place).
     if (structure) routeAroundNodes(cy);
   }, [display]);
+
+  // Touch screens: the graph starts locked so a swipe scrolls the page; "Move graph" unlocks
+  // panning, zooming and dragging.
+  const coarse = typeof window !== "undefined" && (window.matchMedia?.("(pointer: coarse)").matches ?? false);
+  const [locked, setLocked] = useState(coarse);
+  useEffect(() => {
+    const cy = cyRef.current;
+    if (!cy) return;
+    cy.userPanningEnabled(!locked);
+    cy.userZoomingEnabled(!locked);
+    cy.autoungrabify(locked);
+  }, [locked]);
 
   // Follow the system theme.
   useEffect(() => {
@@ -792,7 +825,7 @@ export function GraphCanvas({
     <>
       <div
         ref={host}
-        className="canvas"
+        className={locked ? "canvas locked" : "canvas"}
         role="application"
         tabIndex={0}
         aria-roledescription="trace graph"
@@ -802,6 +835,11 @@ export function GraphCanvas({
       <div className="sr-only" aria-live="polite">
         {said}
       </div>
+      {coarse && (
+        <button type="button" className="btn graph-lock" aria-pressed={!locked} onClick={() => setLocked((l) => !l)}>
+          {locked ? "Move graph" : "Done moving"}
+        </button>
+      )}
       {(arranging || busy) && (
         <div className="arranging" role="status">
           Arranging the graph…

@@ -1,5 +1,5 @@
 import { type FormEvent, useEffect, useState } from "react";
-import { call } from "./api/client";
+import { call, isMock } from "./api/client";
 import type { StatusView } from "./api/types";
 import { ErrorBox } from "./components/bits";
 import { extractId, formatInt } from "./lib/format";
@@ -73,6 +73,11 @@ export function App() {
 
   return (
     <div className="app">
+      {isMock && (
+        <p className="mock-banner" role="note">
+          Demo data: recorded traces, no network. Any transaction id shows a recorded trace.
+        </p>
+      )}
       <header className="topbar">
         <a className="brand" href={href({ page: "home" })}>
           <Logo />

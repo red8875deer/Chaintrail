@@ -276,7 +276,15 @@ impl AppService {
         )
         .await?;
         let graph = ct_trace::graph::build(&report);
-        Ok(TraceView { report, graph })
+        let generated_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        Ok(TraceView {
+            report,
+            graph,
+            generated_at,
+        })
     }
 
     pub fn label_lookup(&self, req: LabelLookupRequest) -> Result<Vec<LabelView>> {

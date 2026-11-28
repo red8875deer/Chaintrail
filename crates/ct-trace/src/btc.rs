@@ -99,8 +99,9 @@ pub async fn trace_bitcoin(
                 .find(|o| o.index == *vout)
                 .ok_or_else(|| {
                     ProviderError::InvalidInput(format!(
-                        "transaction {} has no output {vout}",
-                        seed_tx.txid
+                        "transaction {} has no output {vout}: its outputs are #0 to #{}",
+                        seed_tx.txid,
+                        seed_tx.outputs.len().saturating_sub(1)
                     ))
                 })?;
             vec![(o.index, o.address.clone(), o.value)]

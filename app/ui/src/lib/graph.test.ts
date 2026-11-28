@@ -6,7 +6,7 @@ import large from "../../fixtures/btc_trace_large.json";
 import fanin from "../../fixtures/btc_trace_fanin.json";
 import chain from "../../fixtures/btc_trace_chain.json";
 import alloutputs from "../../fixtures/btc_trace_alloutputs.json";
-import { type DisplayOptions, buildDisplay, defaultMinShareBp, displayPath, leadPath, leadSpine, nodeForLead } from "./graph";
+import { type DisplayOptions, buildDisplay, defaultMinShareBp, displayPath, findNodes, leadPath, leadSpine, nodeForLead, routeToNode } from "./graph";
 import { leadsCsv } from "./export";
 
 const views: [string, TraceView][] = [
@@ -167,5 +167,24 @@ describe("funds not drawn", () => {
     expect(marked.length).toBeGreaterThan(0);
     const all = buildDisplay(v, { ...defaults(v), minShareBp: 0, simplify: false });
     expect(all.elements.some((e) => e.group === "nodes" && /BTC hidden$/.test(String(e.data.label)))).toBe(false);
+  });
+});
+
+describe("find in graph", () => {
+  it("draws a found node with its route from the start", () => {
+    const v = large as unknown as TraceView;
+    const hits = findNodes(v, "1J3Jz3FN");
+    expect(hits.length).toBeGreaterThan(0);
+    const n = hits[0]!;
+    const route = routeToNode(v, n.id);
+    let open = new Set<string>();
+    let d = buildDisplay(v, { ...defaults(v), keep: route.nodes, keepEdges: route.edges });
+    // As the UI does: open what still stands in for it.
+    while (d.nodeOf.get(n.id) !== n.id && open.size < 4) {
+      open = new Set([...open, d.nodeOf.get(n.id)!]);
+      d = buildDisplay(v, { ...defaults(v), expanded: open, keep: route.nodes, keepEdges: route.edges });
+    }
+    expect(d.nodeOf.get(n.id)).toBe(n.id);
+    expect(ids(d, "nodes")).toContain(n.id);
   });
 });

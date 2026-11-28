@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { StatusView, TraceView } from "../api/types";
 import forward from "../../fixtures/btc_trace_forward.json";
 import status from "../../fixtures/status.json";
-import { csvComment, leadsCsv, leadsCsvWithProvenance, provenance } from "./export";
+import { leadsCsv, leadsCsvWithProvenance, plainBtc, plainShare, provenance } from "./export";
 
 const view = forward as unknown as TraceView;
 
@@ -16,21 +16,24 @@ describe("exports carry provenance", () => {
     expect(meta.settings).toContain(`max hops ${view.report.config.max_hops}`);
   });
 
-  it("puts it above the CSV header without changing the rows", () => {
+  it("has the header on the first row, plain numbers, and provenance on every row", () => {
     const csv = leadsCsvWithProvenance(view, meta);
     const lines = csv.trim().split("\r\n");
-    const comments = lines.filter((l) => l.startsWith("#"));
-    expect(comments.length).toBeGreaterThanOrEqual(3);
-    // One plain cell each: never quoted, no commas.
-    for (const c of comments) expect(c).not.toMatch(/[",]/);
-    expect(lines.slice(comments.length).join("\r\n")).toBe(leadsCsv(view).trim());
-    // Every lead row names its full path of transactions.
+    expect(lines[0]).toMatch(/^lead,kind,category,/);
+    expect(lines[0]).toContain("generated_utc");
+    expect(lines.length).toBe(view.report.leads.length + 1);
+    // Every lead row names its full path, the time and the trace it came from.
     for (const l of view.report.leads) expect(csv).toContain(l.path.join(" > "));
+    for (const row of lines.slice(1)) expect(row).toContain("2026-11-27 03:00 UTC");
+    // Without provenance the rows are the same, minus its columns.
+    expect(leadsCsv(view).trim().split("\r\n").length).toBe(lines.length);
   });
 
-  it("writes comment lines as one unquoted cell", () => {
-    expect(csvComment('traced amount 1,234,567.5 BTC, max hops 8, "x"\nnext')).toBe(
-      "# traced amount 1234567.5 BTC; max hops 8; 'x' next",
-    );
+  it("writes amounts and shares as plain numbers", () => {
+    expect(plainBtc(6_936_902_357_000)).toBe("69369.02357000");
+    expect(plainBtc(1)).toBe("0.00000001");
+    expect(plainShare(1, 3)).toBe("0.333333");
+    expect(plainShare(5, 5)).toBe("1.000000");
+    expect(plainShare(0, 0)).toBe("0.000000");
   });
 });

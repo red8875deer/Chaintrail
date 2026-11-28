@@ -183,6 +183,9 @@ pub struct TraceRequest {
 pub struct TraceView {
     pub report: TraceReport,
     pub graph: GraphView,
+    /// When the trace was run (unix seconds). Spend status is at most the cache's volatile
+    /// lifetime (10 minutes) older.
+    pub generated_at: u64,
 }
 
 #[derive(Debug, Clone, Deserialize)]

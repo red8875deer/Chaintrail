@@ -10,7 +10,17 @@ import { LeadsPanel } from "../components/LeadsPanel";
 import { Legend } from "../components/Legend";
 import { exportCsv, exportJson, exportPng } from "../lib/export";
 import { extractId, formatBtc, formatElapsed, formatInt, looksLikeAddress, parseBtc, shortSeed } from "../lib/format";
-import { buildDisplay, defaultMinShareBp, displayPath, isGroupId, leadPath, leadSpine, nodeForLead } from "../lib/graph";
+import {
+  buildDisplay,
+  defaultMinShareBp,
+  displayPath,
+  findNodes,
+  isGroupId,
+  leadPath,
+  leadSpine,
+  nodeForLead,
+  routeToNode,
+} from "../lib/graph";
 import { DEFAULT_MAX_HOPS, DEFAULT_MAX_TXS, type TraceParams, href, parseRoute, sameTrace } from "../lib/route";
 
 /** Traces opened in this window, newest last: Back and Forward reopen them at once. */
@@ -148,6 +158,16 @@ export function TraceView({ params }: { params: TraceParams | null }) {
   const [noteClosed, setNoteClosed] = useState(false);
   /** Nodes to bring into view after the graph changes (e.g. an opened group). */
   const [viewTarget, setViewTarget] = useState<{ ids: string[] } | null>(null);
+  /** Nodes found with "Find in graph", drawn with their route from the start. */
+  const [found, setFound] = useState<{ nodes: ReadonlySet<string>; edges: ReadonlySet<string> }>({
+    nodes: new Set(),
+    edges: new Set(),
+  });
+  const [findText, setFindText] = useState("");
+  /** Said to screen readers when a trace finishes or fails. */
+  const [announce, setAnnounce] = useState("");
+  const [findNote, setFindNote] = useState("");
+  const findIndex = useRef<{ q: string; i: number }>({ q: "", i: 0 });
   const controls = useRef<GraphControls | null>(null);
   const runId = useRef(0);
 
@@ -205,6 +225,12 @@ export function TraceView({ params }: { params: TraceParams | null }) {
       setView(v);
       setNoteClosed(false);
       setViewTarget(null);
+      setFound({ nodes: new Set(), edges: new Set() });
+      setFindNote("");
+      const ends = v.report.leads.filter((l) => l.kind.kind === "endpoint").length;
+      setAnnounce(
+        `Trace finished: ${v.report.leads.length} leads, ${ends} endpoint${ends === 1 ? "" : "s"}. Results are in the panel after the graph.`,
+      );
       if (restore) {
         setHideBp(restore.hideBp);
         setSimplify(restore.simplify);
@@ -219,7 +245,10 @@ export function TraceView({ params }: { params: TraceParams | null }) {
         setSelectedLead(first >= 0 ? first : v.report.leads.length > 0 ? 0 : null);
       }
     } catch (e) {
-      if (id === runId.current) setError(e);
+      if (id === runId.current) {
+        setError(e);
+        setAnnounce("The trace failed; the reason is shown under the form.");
+      }
     } finally {
       stop();
       if (id === runId.current) setRunning(false);
@@ -298,11 +327,11 @@ export function TraceView({ params }: { params: TraceParams | null }) {
             minShareBp: hideBp,
             simplify,
             expanded,
-            keep: revealed.nodes,
-            keepEdges: revealed.edges,
+            keep: found.nodes.size ? new Set([...revealed.nodes, ...found.nodes]) : revealed.nodes,
+            keepEdges: found.edges.size ? new Set([...revealed.edges, ...found.edges]) : revealed.edges,
           })
         : null,
-    [view, hideBp, simplify, expanded, revealed],
+    [view, hideBp, simplify, expanded, revealed, found],
   );
   const path = useMemo(() => (display && reportPath ? displayPath(display, reportPath) : null), [display, reportPath]);
   const focusId = useMemo(() => {
@@ -315,6 +344,52 @@ export function TraceView({ params }: { params: TraceParams | null }) {
     setExpanded((cur) => new Set([...cur, id]));
     setSelection(null);
     if (g) setViewTarget({ ids: g.members });
+  };
+
+  // Find an address or transaction in this trace: draw it with its route and select it.
+  // Enter again moves to the next match.
+  const find = () => {
+    if (!view) return;
+    const q = findText.trim();
+    const matches = findNodes(view, q);
+    if (matches.length === 0) {
+      setFindNote(q.length < 4 ? "Type at least 4 characters." : "Not in this trace.");
+      return;
+    }
+    const i = findIndex.current.q === q ? (findIndex.current.i + 1) % matches.length : 0;
+    findIndex.current = { q, i };
+    const n = matches[i]!;
+    const route = routeToNode(view, n.id);
+    const next = { nodes: new Set([...found.nodes, ...route.nodes]), edges: new Set([...found.edges, ...route.edges]) };
+    // Open any group or run of addresses that still stands in for it.
+    const open = new Set(expanded);
+    for (let k = 0; k < 4; k++) {
+      const d = buildDisplay(view, {
+        minShareBp: hideBp,
+        simplify,
+        expanded: open,
+        keep: new Set([...revealed.nodes, ...next.nodes]),
+        keepEdges: new Set([...revealed.edges, ...next.edges]),
+      });
+      const at = d.nodeOf.get(n.id);
+      if (!at || !isGroupId(at)) break;
+      open.add(at);
+    }
+    if (open.size !== expanded.size) setExpanded(open);
+    setFound(next);
+    setSelection({ type: "node", id: n.id });
+    setViewTarget({ ids: [n.id] });
+    setFindNote(matches.length > 1 ? `${i + 1} of ${matches.length}: Enter for the next` : "");
+  };
+
+  // Back to where the trace starts.
+  const goToStart = () => {
+    if (!view || !display) return;
+    const seed = view.graph.nodes.find((n) => n.seed);
+    const id = seed ? (display.nodeOf.get(seed.id) ?? seed.id) : null;
+    if (!id) return;
+    setSelection({ type: "node", id });
+    controls.current?.focus(id);
   };
 
   // Many small branches were not followed: trace again with a tenth of the minimum.
@@ -339,6 +414,16 @@ export function TraceView({ params }: { params: TraceParams | null }) {
 
   return (
     <div className="workspace">
+      <button
+        type="button"
+        className="skip-link"
+        onClick={() => document.querySelector<HTMLElement>(".side-scroll")?.focus()}
+      >
+        Skip to results
+      </button>
+      <p className="sr-only" role="status" aria-live="polite">
+        {announce}
+      </p>
       <form className="trace-form" onSubmit={submit} aria-label="Trace settings">
         <label className="field">
           <span>Transaction id</span>
@@ -491,6 +576,33 @@ export function TraceView({ params }: { params: TraceParams | null }) {
                   />
                   Group small branches
                 </label>
+                <form
+                  className="find"
+                  role="search"
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    find();
+                  }}
+                >
+                  <input
+                    aria-label="Find an address or transaction in this graph"
+                    placeholder="Find address or tx"
+                    value={findText}
+                    onChange={(e) => {
+                      setFindText(e.target.value);
+                      setFindNote("");
+                    }}
+                    spellCheck={false}
+                  />
+                  {findNote && (
+                    <span className="small muted" role="status">
+                      {findNote}
+                    </span>
+                  )}
+                </form>
+                <button type="button" className="btn subtle" onClick={goToStart} title="Show where the trace starts">
+                  Start
+                </button>
                 <button type="button" className="btn subtle" onClick={() => controls.current?.fit()}>
                   Fit
                 </button>
@@ -544,7 +656,7 @@ export function TraceView({ params }: { params: TraceParams | null }) {
         </div>
 
         <aside className="side" aria-label="Results">
-          <div className="side-scroll">
+          <div className="side-scroll" tabIndex={-1}>
             {view && !running ? (
               <>
                 {error ? <ErrorBox error={error} /> : null}
@@ -565,6 +677,7 @@ export function TraceView({ params }: { params: TraceParams | null }) {
                   view={view}
                   selectedLead={selectedLead}
                   onSelectLead={selectLead}
+                  onGoToStart={goToStart}
                   onClearLead={() => {
                     setSelectedLead(null);
                     setSelection(null);
