@@ -100,6 +100,8 @@ export function stopReasonText(stop: StopReason): string {
       return "transaction budget used up";
     case "error":
       return `data error: ${stop.detail}`;
+    case "stopped":
+      return "trace stopped by you";
   }
 }
 

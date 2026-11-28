@@ -84,6 +84,18 @@ confidence and the evidence.
 - Funds at rest in an **unconfirmed** transaction are an inference (Medium), not a fact: the
   transaction can still be replaced or dropped. Any lead whose route passes through an
   unconfirmed transaction is at most Medium and says so.
+- **Data errors are never silent.** An address check that fails, a transaction whose
+  outputs exceed its inputs, or any other bad answer stops that branch as "not followed:
+  data error" with the reason; the report counts failed address checks.
+- **Limits limit requests too.** Once the transaction budget is used up, no more lookups
+  are made: a coin is followed only if where it went is already known, else only labels and
+  earlier checks apply and it is "not followed: budget". Address checks have their own
+  budget (3 per transaction of the budget); past it only labels are used and the report
+  says how many were skipped. Past 200 branches cut by the budget, they are reported per
+  transaction. Address activity counts are cached for 7 days (they only grow), so repeat
+  traces need no lookups.
+- **Stopping.** A running trace can be stopped: it reports what it found, and the branches
+  still open are "not followed: trace stopped by you".
 - A transaction with several traced inputs is processed once per input, so a coin can be
   reached again after it was followed: that later part goes the same way whatever its size
   (it is never filed as a separate small branch), and the parts of one transfer are reported

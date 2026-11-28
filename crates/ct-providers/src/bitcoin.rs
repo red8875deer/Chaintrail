@@ -15,6 +15,13 @@ pub trait BitcoinProvider: Send + Sync {
 
     async fn address_summary(&self, address: &Address) -> Result<AddressSummary>;
 
+    /// An address's activity counts for the busy-wallet check. Counts only grow, so a cached
+    /// summary that is some days old is still a safe lower bound (caches keep it longer than
+    /// a summary shown as the current balance).
+    async fn address_activity(&self, address: &Address) -> Result<AddressSummary> {
+        self.address_summary(address).await
+    }
+
     /// Confirmed transactions for an address, newest first, one page at a time.
     /// Pass the last txid of the previous page to get the next one. An empty page means
     /// there are no more.
@@ -54,23 +61,62 @@ pub(crate) fn require_bitcoin(address: &Address) -> Result<()> {
 /// (rate limits, outages, bad responses). "Not found" and invalid input are returned as-is.
 pub struct FallbackBitcoin {
     providers: Vec<Box<dyn BitcoinProvider>>,
+    /// Until when each provider is skipped after it failed (rate limited, down, blocked), so
+    /// later requests go straight to the next one instead of paying its retries again.
+    cooldown: Vec<std::sync::Mutex<Option<std::time::Instant>>>,
 }
+
+/// How long a failing provider is skipped.
+pub const PROVIDER_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(60);
 
 impl FallbackBitcoin {
     pub fn new(providers: Vec<Box<dyn BitcoinProvider>>) -> Self {
         assert!(!providers.is_empty(), "at least one provider is required");
-        FallbackBitcoin { providers }
+        let cooldown = providers
+            .iter()
+            .map(|_| std::sync::Mutex::new(None))
+            .collect();
+        FallbackBitcoin {
+            providers,
+            cooldown,
+        }
+    }
+
+    /// Providers to try, in order: those not cooling down; if all are, all of them.
+    fn order(&self) -> Vec<usize> {
+        let now = std::time::Instant::now();
+        let ready: Vec<usize> = (0..self.providers.len())
+            .filter(|&i| {
+                self.cooldown[i]
+                    .lock()
+                    .map(|c| c.is_none_or(|t| t <= now))
+                    .unwrap_or(true)
+            })
+            .collect();
+        if ready.is_empty() {
+            (0..self.providers.len()).collect()
+        } else {
+            ready
+        }
+    }
+
+    fn failed(&self, i: usize) {
+        if let Ok(mut c) = self.cooldown[i].lock() {
+            *c = Some(std::time::Instant::now() + PROVIDER_COOLDOWN);
+        }
     }
 }
 
 macro_rules! try_each {
     ($self:ident, |$p:ident| $call:expr) => {{
         let mut last_err = None;
-        for $p in &$self.providers {
+        for i in $self.order() {
+            let $p = &$self.providers[i];
             match $call.await {
                 Ok(v) => return Ok(v),
                 Err(e) if e.should_fall_back() => {
                     tracing::warn!(provider = $p.name(), error = %e, "falling back");
+                    $self.failed(i);
                     last_err = Some(e);
                 }
                 Err(e) => return Err(e),
@@ -108,6 +154,68 @@ impl BitcoinProvider for FallbackBitcoin {
 
     async fn outspends(&self, txid: &str) -> Result<Vec<OutputSpend>> {
         try_each!(self, |p| p.outspends(txid))
+    }
+}
+
+/// A provider that fails every request with [`ProviderError::Cancelled`] once `stop` is set:
+/// how a running trace is stopped (it then reports what it found so far).
+pub struct Stoppable<'a> {
+    inner: &'a dyn BitcoinProvider,
+    stop: &'a std::sync::atomic::AtomicBool,
+}
+
+impl<'a> Stoppable<'a> {
+    pub fn new(inner: &'a dyn BitcoinProvider, stop: &'a std::sync::atomic::AtomicBool) -> Self {
+        Stoppable { inner, stop }
+    }
+
+    fn check(&self) -> Result<()> {
+        if self.stop.load(std::sync::atomic::Ordering::Relaxed) {
+            Err(ProviderError::Cancelled)
+        } else {
+            Ok(())
+        }
+    }
+}
+
+#[async_trait]
+impl BitcoinProvider for Stoppable<'_> {
+    fn name(&self) -> &str {
+        self.inner.name()
+    }
+
+    async fn tip_height(&self) -> Result<u64> {
+        self.check()?;
+        self.inner.tip_height().await
+    }
+
+    async fn address_summary(&self, address: &Address) -> Result<AddressSummary> {
+        self.check()?;
+        self.inner.address_summary(address).await
+    }
+
+    async fn address_activity(&self, address: &Address) -> Result<AddressSummary> {
+        self.check()?;
+        self.inner.address_activity(address).await
+    }
+
+    async fn address_txs(
+        &self,
+        address: &Address,
+        after_txid: Option<&str>,
+    ) -> Result<Vec<UtxoTx>> {
+        self.check()?;
+        self.inner.address_txs(address, after_txid).await
+    }
+
+    async fn tx(&self, txid: &str) -> Result<UtxoTx> {
+        self.check()?;
+        self.inner.tx(txid).await
+    }
+
+    async fn outspends(&self, txid: &str) -> Result<Vec<OutputSpend>> {
+        self.check()?;
+        self.inner.outspends(txid).await
     }
 }
 

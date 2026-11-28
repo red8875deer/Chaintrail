@@ -2,7 +2,11 @@
 
 All sources are free. Each was checked from a development machine on **2026-11-25**.
 Rate limits are mostly unpublished or change without notice, so the client uses
-conservative per-host limits and backs off on HTTP 429.
+conservative per-host limits and backs off on HTTP 429 (waiting at most 15 seconds for a
+Retry-After). A source that keeps failing (rate limited, down, or blocking with 401/403/451)
+is skipped for 60 seconds and the fallback is used directly. A response that cannot be
+right (a spend list that does not match the transaction's outputs) is reported as a data
+error and never cached.
 
 ## Chain data
 
@@ -55,4 +59,6 @@ Every public API sees the addresses you query. Self-hosting removes this:
 - Ethereum: an archive node with traces (multi-TB) or a self-hosted Blockscout
 - Tron: java-tron full node (multi-TB)
 
-All are free software; the adapters accept a custom base URL.
+All are free software. The Esplora adapter takes a base URL in code, but the app does not
+yet offer a setting for it (planned); until then every query goes to the public services
+above, and on fallback to both.

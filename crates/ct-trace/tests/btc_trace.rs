@@ -641,6 +641,73 @@ async fn coinjoin_change_matched_by_amount_is_followed() {
 }
 
 #[tokio::test]
+async fn a_failed_address_check_is_reported_not_skipped() {
+    // Address 7 cannot be checked (data source down): the branch stops there as "not
+    // followed: data error", instead of being treated as a plain address and followed on.
+    let t2 = tx(
+        &txid(2),
+        101,
+        &[(&txid(1), 0, &addr(2), BTC)],
+        &[(&addr(7), BTC - 1_000)],
+    );
+    let t3 = tx(
+        &txid(3),
+        102,
+        &[(&txid(2), 0, &addr(7), BTC - 1_000)],
+        &[(&addr(8), BTC - 2_000)],
+    );
+    let p = MemoryBitcoin::new([victim_payment(), t2, t3]).with_failing_summary(&addr(7));
+    let r = run(
+        &p,
+        Seed::Output {
+            txid: txid(1),
+            vout: 0,
+        },
+        forward(),
+    )
+    .await;
+    let l = &r.leads[0];
+    assert_eq!(l.address, Some(addr(7)));
+    assert!(
+        matches!(&l.kind, LeadKind::Unexplored { stop: StopReason::Error(e) } if e.contains("address check failed")),
+        "{:?}",
+        l.kind
+    );
+    assert_eq!(r.stats.address_checks_failed, 1);
+}
+
+#[tokio::test]
+async fn the_budget_also_limits_lookups() {
+    // tx 2 fans out to 40 addresses; with a budget of 2 transactions nothing more is
+    // fetched or looked up for those 40 coins.
+    let outs: Vec<(ct_core::Address, u64)> =
+        (0..40u8).map(|i| (addr(100 + i), 2_000_000)).collect();
+    let outs: Vec<(&ct_core::Address, u64)> = outs.iter().map(|(a, v)| (a, *v)).collect();
+    let t2 = tx(&txid(2), 101, &[(&txid(1), 0, &addr(2), BTC)], &outs);
+    let p = MemoryBitcoin::new([victim_payment(), t2]);
+    let r = run(
+        &p,
+        Seed::Output {
+            txid: txid(1),
+            vout: 0,
+        },
+        TraceConfig {
+            max_txs: 2,
+            ..forward()
+        },
+    )
+    .await;
+    assert!(r.stats.budget_exhausted);
+    assert_eq!(p.call_count("address_summary"), 0);
+    assert!(
+        p.call_count("outspends") <= 2,
+        "{}",
+        p.call_count("outspends")
+    );
+    assert_eq!(r.leads.len(), 40);
+}
+
+#[tokio::test]
 async fn deposit_consolidation_is_a_service_endpoint() {
     let t2 = tx(
         &txid(2),

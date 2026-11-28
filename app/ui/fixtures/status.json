@@ -1,1 +1,9 @@
-{"cache":"/home/user/.cache/chaintrail/cache.sqlite","labelled_addresses":48581,"packs":42,"provider":"mempool.space","user_labels_dir":"/home/user/.local/share/chaintrail/labels","version":"0.1.0"}
+{
+  "cache": "/home/user/.cache/chaintrail/cache.sqlite",
+  "labelled_addresses": 48581,
+  "packs": 42,
+  "provider": "mempool.space",
+  "user_labels_dir": "/home/user/.local/share/chaintrail/labels",
+  "version": "0.1.0",
+  "warnings": []
+}

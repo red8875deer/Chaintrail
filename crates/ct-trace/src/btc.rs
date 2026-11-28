@@ -5,7 +5,8 @@
 //! inputs is passed to each output in proportion to the output's value. Fees and rounding
 //! are recorded, so leads + fees + dust always add up to the seed amount.
 
-use std::collections::{HashMap, HashSet};
+use std::cmp::Reverse;
+use std::collections::{BinaryHeap, HashMap, HashSet};
 
 use ct_core::{
     Address, AddressSummary, Chain, Claim, Confidence, EntityCategory, Label, OutputSpend, UtxoTx,
@@ -79,6 +80,8 @@ pub async fn trace_bitcoin(
         txs: HashMap::new(),
         spends: HashMap::new(),
         summaries: HashMap::new(),
+        failed_checks: HashMap::new(),
+        budget_branches: 0,
         samples: HashMap::new(),
         leads: Vec::new(),
         lead_index: HashMap::new(),
@@ -387,6 +390,10 @@ struct Tracer<'a> {
     txs: HashMap<String, UtxoTx>,
     spends: HashMap<String, Vec<OutputSpend>>,
     summaries: HashMap<Address, Option<AddressSummary>>,
+    /// Address checks that failed in this trace, so the same address fails the same way.
+    failed_checks: HashMap<Address, StopReason>,
+    /// Branches cut by the transaction budget so far.
+    budget_branches: u32,
     /// Transactions fetched only to look at, outside the trace's budget (`sample_tx`).
     samples: HashMap<String, UtxoTx>,
     leads: Vec<Lead>,
@@ -413,6 +420,26 @@ struct NamedService {
     label: Label,
     confidence: Confidence,
     evidence: Vec<String>,
+}
+
+/// Branches cut by the budget reported one per coin; past this, one per transaction.
+pub const MAX_BUDGET_LEADS: u32 = 200;
+
+/// Address lookups allowed per transaction of the budget (`max_txs`).
+pub const ADDRESS_CHECKS_PER_TX: u32 = 3;
+
+/// A non-coinbase transaction whose outputs exceed its inputs: the data is wrong.
+fn inconsistent(tx: &UtxoTx) -> bool {
+    !tx.is_coinbase() && tx.total_out() > tx.total_in()
+}
+
+/// Why a branch stops after a data source error: the user's Stop, or a data error.
+fn stop_reason(e: &ProviderError, what: &str) -> StopReason {
+    match e {
+        ProviderError::Cancelled => StopReason::Stopped,
+        e if what.is_empty() => StopReason::Error(e.to_string()),
+        e => StopReason::Error(format!("{what}: {e}")),
+    }
 }
 
 /// A sanctions-list entry for a person ("SDN uid …; Individual; …" in the OFAC pack): a
@@ -456,13 +483,52 @@ fn block_time(tx: &UtxoTx) -> Option<u64> {
     tx.block.as_ref().map(|b| b.time)
 }
 
-/// Pop the pending entry with the largest amount (ties: lowest key, for determinism).
-fn pop_largest<T>(pending: &mut HashMap<String, T>, amount: impl Fn(&T) -> u64) -> Option<T> {
-    let key = pending
-        .iter()
-        .max_by(|a, b| amount(a.1).cmp(&amount(b.1)).then(b.0.cmp(a.0)))
-        .map(|(k, _)| k.clone())?;
-    pending.remove(&key)
+/// Work queue: the entry with the largest amount first (ties: lowest key, for
+/// determinism). An entry whose amount grew is queued again; outdated heap entries are
+/// skipped. (A scan of every entry per pop made large traces quadratic.)
+struct Queue<T> {
+    items: HashMap<String, T>,
+    heap: BinaryHeap<(u64, Reverse<String>)>,
+    amount: fn(&T) -> u64,
+}
+
+impl<T> Queue<T> {
+    fn new(amount: fn(&T) -> u64) -> Self {
+        Queue {
+            items: HashMap::new(),
+            heap: BinaryHeap::new(),
+            amount,
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.items.len()
+    }
+
+    fn get_mut(&mut self, key: &str) -> Option<&mut T> {
+        self.items.get_mut(key)
+    }
+
+    fn insert(&mut self, key: String, v: T) {
+        self.heap.push(((self.amount)(&v), Reverse(key.clone())));
+        self.items.insert(key, v);
+    }
+
+    /// After an entry's amount changed.
+    fn requeue(&mut self, key: &str) {
+        if let Some(v) = self.items.get(key) {
+            self.heap.push(((self.amount)(v), Reverse(key.to_string())));
+        }
+    }
+
+    fn pop(&mut self) -> Option<T> {
+        while let Some((a, Reverse(k))) = self.heap.pop() {
+            if self.items.get(&k).is_some_and(|v| (self.amount)(v) == a) {
+                return self.items.remove(&k);
+            }
+        }
+        None
+    }
 }
 
 impl<'a> Tracer<'a> {
@@ -541,37 +607,59 @@ impl<'a> Tracer<'a> {
         ))
     }
 
-    async fn endpoint_for(&mut self, address: &Address) -> Option<(String, EntityCategory, Claim)> {
+    /// `Err`: the address could not be checked (or the trace was stopped); the branch is then
+    /// "not followed", never silently treated as a plain address.
+    async fn endpoint_for(
+        &mut self,
+        address: &Address,
+    ) -> Result<Option<(String, EntityCategory, Claim)>, StopReason> {
         if let Some(label) = self.labels.lookup(address) {
             if self.stops_at(&label) {
-                return Some((label_title(&label), label.category, label.claim));
+                return Ok(Some((label_title(&label), label.category, label.claim)));
             }
             // Followed through whatever its activity (see `known_endpoint`).
             let follow = !label.category.is_endpoint() || sanctioned_individual(&label);
             self.saw_label(label);
             if follow {
-                return None;
+                return Ok(None);
             }
         }
         if !self.config.check_addresses {
-            return None;
+            return Ok(None);
+        }
+        if let Some(e) = self.failed_checks.get(address) {
+            return Err(e.clone());
         }
         if !self.summaries.contains_key(address) {
+            // Address checks have their own budget: a trace through huge fan-outs must not
+            // turn into tens of thousands of lookups. Past it, only what is known is used.
+            if self.stats.addresses_checked >= self.check_budget() {
+                self.stats.address_checks_skipped += 1;
+                return Ok(self.known_endpoint(address));
+            }
             self.stats.addresses_checked += 1;
-            let s = match self.provider.address_summary(address).await {
-                Ok(s) => Some(s),
-                Err(e) => {
-                    tracing::warn!(%address, error = %e, "address check failed");
-                    None
+            match self.provider.address_activity(address).await {
+                Ok(s) => {
+                    self.summaries.insert(address.clone(), Some(s));
                 }
-            };
-            self.summaries.insert(address.clone(), s);
+                Err(e) => {
+                    let stop = stop_reason(&e, "address check failed");
+                    if !matches!(stop, StopReason::Stopped) {
+                        self.stats.address_checks_failed += 1;
+                    }
+                    self.failed_checks.insert(address.clone(), stop.clone());
+                    return Err(stop);
+                }
+            }
         }
-        let hint = self.summaries[address]
+        let Some(hint) = self.summaries[address]
             .as_ref()
             .and_then(service_from_summary)
-            .filter(|h| h.confidence >= self.config.stop_confidence)?;
-        Some((
+            .filter(|h| h.confidence >= self.config.stop_confidence)
+        else {
+            return Ok(None);
+        };
+        Ok(Some((
             "Likely service (busy wallet)".into(),
             hint.category,
             Claim::Inference {
@@ -579,7 +667,7 @@ impl<'a> Tracer<'a> {
                 confidence: hint.confidence,
                 evidence: hint.evidence,
             },
-        ))
+        )))
     }
 
     /// For a consolidation, sample the largest inputs' ages. Mostly long-dormant inputs mean
@@ -697,6 +785,14 @@ impl<'a> Tracer<'a> {
     }
 
     /// Whether a label is strong enough, and of an endpoint category, to stop the trace.
+    /// Address lookups allowed in one trace: a few per transaction fetched.
+    fn check_budget(&self) -> u32 {
+        self.config
+            .max_txs
+            .saturating_mul(ADDRESS_CHECKS_PER_TX)
+            .max(50)
+    }
+
     /// The coin the user chose to trace from (not every output of a whole-transaction seed).
     fn is_start(&self, hop: u32) -> bool {
         hop == 0 && !self.whole_tx_seed
@@ -886,10 +982,21 @@ impl<'a> Tracer<'a> {
             StopReason::HopLimit => "Not followed: hop limit reached".to_string(),
             StopReason::Budget => "Not followed: transaction budget used up".to_string(),
             StopReason::Error(e) => format!("Not followed: data error ({e})"),
+            StopReason::Stopped => "Not followed: trace stopped by you".to_string(),
         };
-        if stop == StopReason::Budget {
+        // Past many branches cut by the budget, they are reported per transaction (thousands
+        // of one-coin leads help no one); the coins are still in the flows.
+        let (address, vout) = if stop == StopReason::Budget {
             self.stats.budget_exhausted = true;
-        }
+            self.budget_branches += 1;
+            if self.budget_branches > MAX_BUDGET_LEADS {
+                (None, None)
+            } else {
+                (address, vout)
+            }
+        } else {
+            (address, vout)
+        };
         self.add_lead(
             LeadKind::Unexplored { stop },
             title,
@@ -911,11 +1018,11 @@ impl<'a> Tracer<'a> {
         min_amount: u64,
         progress: &mut (dyn FnMut(Progress) + Send),
     ) {
-        let mut pending: HashMap<String, Coin> = HashMap::new();
+        let mut pending: Queue<Coin> = Queue::new(|c| c.amount);
         // Fewest hops seen for each coin, with that route: a coin reached again by a longer
         // route keeps its shortest one (hops and path always agree).
         let mut best: HashMap<String, (u32, Vec<String>)> = HashMap::new();
-        let push = |pending: &mut HashMap<String, Coin>,
+        let push = |pending: &mut Queue<Coin>,
                     best: &mut HashMap<String, (u32, Vec<String>)>,
                     mut c: Coin| {
             let key = format!("{}:{}", c.txid, c.vout);
@@ -938,6 +1045,7 @@ impl<'a> Tracer<'a> {
                         e.hop = c.hop;
                         e.path = c.path;
                     }
+                    pending.requeue(&key);
                 }
                 None => {
                     pending.insert(key, c);
@@ -954,7 +1062,7 @@ impl<'a> Tracer<'a> {
         // goes the same way, whatever its size (it is not a separate small branch).
         let mut followed: HashSet<String> = HashSet::new();
         loop {
-            while let Some(coin) = pop_largest(&mut pending, |c| c.amount) {
+            while let Some(coin) = pending.pop() {
                 self.via = coin.address.clone();
                 self.mixed_in = coin.mixed_at.clone();
                 progress(Progress {
@@ -998,32 +1106,95 @@ impl<'a> Tracer<'a> {
                     continue;
                 }
                 followed.insert(coin_key);
+                // Budget used up: no more requests for this coin unless where it went is
+                // already known; labels and earlier checks still apply.
+                if (self.txs.len() as u32) >= self.config.max_txs {
+                    let known = self
+                        .spends
+                        .get(&coin.txid)
+                        .and_then(|s| s.get(coin.vout as usize))
+                        .is_some_and(|s| {
+                            !s.spent
+                                || s.spending_txid
+                                    .as_ref()
+                                    .is_some_and(|t| self.txs.contains_key(t))
+                        });
+                    if !known {
+                        if !self.exempt(&coin)
+                            && let Some(addr) = coin.address.clone()
+                            && let Some((title, category, claim)) = self.known_endpoint(&addr)
+                        {
+                            self.add_lead(
+                                LeadKind::Endpoint,
+                                title,
+                                Some(category),
+                                Some(addr),
+                                Some(coin.txid.clone()),
+                                None,
+                                coin.amount,
+                                coin.time,
+                                coin.hop,
+                                claim,
+                                &coin.path,
+                            );
+                        } else {
+                            self.unexplored(
+                                StopReason::Budget,
+                                coin.address.clone(),
+                                &coin.txid,
+                                Some(coin.vout),
+                                coin.amount,
+                                coin.time,
+                                coin.hop,
+                                &coin.path,
+                            );
+                        }
+                        continue;
+                    }
+                }
                 // Endpoint at the address holding the coin (not for the seed itself: the user
                 // chose to trace from there).
                 if !self.exempt(&coin)
                     && let Some(addr) = coin.address.clone()
-                    && let Some((title, category, claim)) = self.endpoint_for(&addr).await
                 {
-                    self.add_lead(
-                        LeadKind::Endpoint,
-                        title,
-                        Some(category),
-                        Some(addr),
-                        Some(coin.txid.clone()),
-                        None,
-                        coin.amount,
-                        coin.time,
-                        coin.hop,
-                        claim,
-                        &coin.path,
-                    );
-                    continue;
+                    match self.endpoint_for(&addr).await {
+                        Ok(Some((title, category, claim))) => {
+                            self.add_lead(
+                                LeadKind::Endpoint,
+                                title,
+                                Some(category),
+                                Some(addr),
+                                Some(coin.txid.clone()),
+                                None,
+                                coin.amount,
+                                coin.time,
+                                coin.hop,
+                                claim,
+                                &coin.path,
+                            );
+                            continue;
+                        }
+                        Ok(None) => {}
+                        Err(stop) => {
+                            self.unexplored(
+                                stop,
+                                coin.address.clone(),
+                                &coin.txid,
+                                Some(coin.vout),
+                                coin.amount,
+                                coin.time,
+                                coin.hop,
+                                &coin.path,
+                            );
+                            continue;
+                        }
+                    }
                 }
                 let spend = match self.outspend(&coin.txid, coin.vout).await {
                     Ok(s) => s,
                     Err(e) => {
                         self.unexplored(
-                            StopReason::Error(e.to_string()),
+                            stop_reason(&e, ""),
                             coin.address.clone(),
                             &coin.txid,
                             Some(coin.vout),
@@ -1090,7 +1261,7 @@ impl<'a> Tracer<'a> {
                     Ok(t) => t,
                     Err(e) => {
                         self.unexplored(
-                            StopReason::Error(e.to_string()),
+                            stop_reason(&e, ""),
                             coin.address.clone(),
                             &coin.txid,
                             Some(coin.vout),
@@ -1107,6 +1278,24 @@ impl<'a> Tracer<'a> {
                 let time = block_time(&stx);
                 let hop = coin.hop + 1;
 
+                // Data that cannot be right (paying out more than came in) is a data error,
+                // never allocated (the arithmetic would wrap).
+                if inconsistent(&stx) {
+                    self.unexplored(
+                        StopReason::Error(format!(
+                            "transaction {} pays out more than its inputs: inconsistent data",
+                            stx.txid
+                        )),
+                        coin.address.clone(),
+                        &coin.txid,
+                        Some(coin.vout),
+                        coin.amount,
+                        coin.time,
+                        coin.hop,
+                        &coin.path,
+                    );
+                    continue;
+                }
                 let shape = classify(&stx);
                 if let TxShape::CoinJoin(info) = &shape {
                     let mut evidence = info.evidence.clone();
@@ -1491,10 +1680,10 @@ impl<'a> Tracer<'a> {
         min_amount: u64,
         progress: &mut (dyn FnMut(Progress) + Send),
     ) {
-        let mut pending: HashMap<String, Source> = HashMap::new();
+        let mut pending: Queue<Source> = Queue::new(|s| s.amount());
         // Fewest hops seen for each transaction, with that route.
         let mut best: HashMap<String, (u32, Vec<String>)> = HashMap::new();
-        let push = |pending: &mut HashMap<String, Source>,
+        let push = |pending: &mut Queue<Source>,
                     best: &mut HashMap<String, (u32, Vec<String>)>,
                     mut s: Source| {
             match best.get(&s.txid) {
@@ -1525,6 +1714,7 @@ impl<'a> Tracer<'a> {
                         e.hop = s.hop;
                         e.path = s.path;
                     }
+                    pending.requeue(&s.txid);
                 }
                 None => {
                     pending.insert(s.txid.clone(), s);
@@ -1537,7 +1727,7 @@ impl<'a> Tracer<'a> {
 
         let mut deferred: Vec<Source> = Vec::new();
         loop {
-            while let Some(src) = pop_largest(&mut pending, |s| s.amount()) {
+            while let Some(src) = pending.pop() {
                 self.mixed_in = src.mixed_at.clone();
                 self.via = src
                     .receivers
@@ -1577,11 +1767,21 @@ impl<'a> Tracer<'a> {
                 let tx = match self.tx(&src.txid).await {
                     Ok(t) => t,
                     Err(e) => {
-                        self.unexplored_receivers(StopReason::Error(e.to_string()), &src);
+                        self.unexplored_receivers(stop_reason(&e, ""), &src);
                         continue;
                     }
                 };
                 let time = block_time(&tx);
+                if inconsistent(&tx) {
+                    self.unexplored_receivers(
+                        StopReason::Error(format!(
+                            "transaction {} pays out more than its inputs: inconsistent data",
+                            tx.txid
+                        )),
+                        &src,
+                    );
+                    continue;
+                }
                 let shape = classify(&tx);
                 match &shape {
                     TxShape::Coinbase => {
@@ -1841,9 +2041,22 @@ impl<'a> Tracer<'a> {
                     self.via = input.address.clone();
                     // Small shares use only what is already known (no lookups for them).
                     let endpoint = match input.address.clone() {
-                        Some(addr) if share >= min_amount => {
-                            self.endpoint_for(&addr).await.map(|e| (addr, e))
-                        }
+                        Some(addr) if share >= min_amount => match self.endpoint_for(&addr).await {
+                            Ok(e) => e.map(|e| (addr, e)),
+                            Err(stop) => {
+                                self.unexplored(
+                                    stop,
+                                    input.address.clone(),
+                                    &prev_txid,
+                                    Some(input.prev_vout),
+                                    share,
+                                    time,
+                                    src.hop + 1,
+                                    &path,
+                                );
+                                continue;
+                            }
+                        },
                         Some(addr) => self.known_endpoint(&addr).map(|e| (addr, e)),
                         None => None,
                     };
@@ -1987,4 +2200,18 @@ fn at_start(
 /// Bitcoin addresses only; used by callers that build seeds from user input.
 pub fn parse_btc_address(s: &str) -> Result<Address, ct_core::AddressError> {
     Address::parse(Chain::Bitcoin, s)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stop_reasons() {
+        let plain = stop_reason(&ProviderError::NotFound("tx".into()), "");
+        assert!(matches!(plain, StopReason::Error(e) if e.contains("not found")));
+        let named = stop_reason(&ProviderError::NotFound("a".into()), "address check failed");
+        assert!(matches!(named, StopReason::Error(e) if e.starts_with("address check failed")));
+        assert_eq!(stop_reason(&ProviderError::Cancelled, ""), StopReason::Stopped);
+    }
 }

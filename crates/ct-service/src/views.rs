@@ -17,6 +17,8 @@ pub struct StatusView {
     pub labelled_addresses: usize,
     pub packs: usize,
     pub user_labels_dir: Option<String>,
+    /// Problems found at startup that the app worked around (a damaged cache or label file).
+    pub warnings: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

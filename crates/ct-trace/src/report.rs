@@ -62,6 +62,8 @@ pub enum StopReason {
     HopLimit,
     Budget,
     Error(String),
+    /// The user stopped the trace before this branch was followed.
+    Stopped,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -177,6 +179,14 @@ pub struct TraceStats {
     pub below_threshold: u64,
     pub peel_steps: u32,
     pub budget_exhausted: bool,
+    /// Address checks that failed (data source error): those branches are "not followed:
+    /// data error", never silently treated as plain addresses.
+    #[serde(default)]
+    pub address_checks_failed: u32,
+    /// Address checks skipped because their budget was used up (only labels and checks
+    /// already made were used there).
+    #[serde(default)]
+    pub address_checks_skipped: u32,
 }
 
 /// A branch smaller than the minimum, not followed (`docs/TRACING.md` §1.3). The largest

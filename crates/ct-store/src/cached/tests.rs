@@ -187,7 +187,10 @@ fn cached(fake: Fake, ttl: Duration) -> CachedBitcoin<Fake> {
     CachedBitcoin::new(
         fake,
         Store::open_in_memory().unwrap(),
-        CachePolicy { volatile_ttl: ttl },
+        CachePolicy {
+            volatile_ttl: ttl,
+            activity_ttl: ttl,
+        },
     )
 }
 
@@ -277,16 +280,36 @@ async fn tip_height_never_cached() {
 #[tokio::test]
 async fn final_outspends_served_after_ttl() {
     let all_spent = vec![spent(true), spent(true)];
+    let t = tx(1, true, &[ScriptType::P2wpkh, ScriptType::P2wpkh]);
     let c = cached(
-        Fake::default().with_outspends(&txid(1), all_spent.clone()),
+        Fake::default()
+            .with_tx(&t)
+            .with_outspends(&txid(1), all_spent.clone()),
         Duration::ZERO,
     );
+    c.tx(&txid(1)).await.unwrap();
 
     assert_eq!(c.outspends(&txid(1)).await.unwrap(), all_spent);
     assert_eq!(c.outspends(&txid(1)).await.unwrap(), all_spent);
 
     assert_eq!(count(&c.inner.calls.outspends), 1);
-    assert_eq!(c.stats(), stats(1, 1));
+    // tx miss, outspends miss, outspends hit.
+    assert_eq!(c.stats(), stats(1, 2));
+}
+
+#[tokio::test]
+async fn short_or_empty_outspends_are_rejected_not_cached() {
+    // The data source answered with fewer spend records than the tx has outputs.
+    let t = tx(1, true, &[ScriptType::P2wpkh, ScriptType::P2wpkh]);
+    let c = cached(
+        Fake::default().with_tx(&t).with_outspends(&txid(1), vec![]),
+        LONG,
+    );
+    c.tx(&txid(1)).await.unwrap();
+    assert!(c.outspends(&txid(1)).await.is_err());
+    assert!(c.outspends(&txid(1)).await.is_err());
+    // Asked again each time: the bad answer was not kept.
+    assert_eq!(count(&c.inner.calls.outspends), 2);
 }
 
 #[tokio::test]
@@ -352,7 +375,11 @@ fn outspends_finality_rules() {
     let op_ret = tx(1, true, &[ScriptType::P2wpkh, ScriptType::OpReturn]);
     let plain = tx(1, true, &[ScriptType::P2wpkh, ScriptType::P2wpkh]);
 
-    assert!(outspends_final(&[spent(true), spent(true)], None));
+    // Without the tx, the list cannot be checked against its outputs: never final.
+    assert!(!outspends_final(&[spent(true), spent(true)], None));
+    assert!(!outspends_final(&[], None));
+    assert!(outspends_final(&[spent(true), spent(true)], Some(&plain)));
+    assert!(!outspends_final(&[spent(true)], Some(&plain)));
     assert!(!outspends_final(&[spent(true), unspent()], None));
     assert!(outspends_final(&[spent(true), unspent()], Some(&op_ret)));
     assert!(!outspends_final(&[spent(true), unspent()], Some(&plain)));

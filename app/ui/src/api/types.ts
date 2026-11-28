@@ -51,7 +51,7 @@ export interface BlockRef {
 
 /** Errors come back with a kind (for styling) and a plain-language message. */
 export interface ServiceError {
-  kind: "invalid_input" | "not_found" | "unavailable" | "internal";
+  kind: "invalid_input" | "not_found" | "unavailable" | "cancelled" | "internal";
   message: string;
 }
 
@@ -64,6 +64,8 @@ export interface StatusView {
   labelled_addresses: number;
   packs: number;
   user_labels_dir: string | null;
+  /** Problems found at startup that the app worked around (damaged cache or label file). */
+  warnings?: string[];
 }
 
 export type ResolveView =
@@ -224,7 +226,8 @@ export interface TraceRequest {
 export type StopReason =
   | { reason: "hop_limit" }
   | { reason: "budget" }
-  | { reason: "error"; detail: string };
+  | { reason: "error"; detail: string }
+  | { reason: "stopped" };
 
 export type LeadKind =
   | { kind: "endpoint" }
@@ -291,6 +294,10 @@ export interface TraceStats {
   below_threshold: number;
   peel_steps: number;
   budget_exhausted: boolean;
+  /** Address checks that failed (those branches are "not followed: data error"). */
+  address_checks_failed?: number;
+  /** Address checks skipped because their budget was used up. */
+  address_checks_skipped?: number;
 }
 
 export interface TraceConfig {
@@ -404,8 +411,11 @@ export interface TraceView {
   generated_at?: number;
 }
 
-/** Progress events emitted by the desktop app during a trace ("trace_progress"). */
+/** Progress of a running trace (desktop "trace_progress" events; `trace_progress` command
+ * in the browser). */
 export interface TraceProgress {
+  /** Desktop events: the trace they belong to. */
+  id?: string | null;
   txs_examined: number;
   pending: number;
   leads: number;

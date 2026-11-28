@@ -37,11 +37,13 @@ pub struct AppService {
     labels: RwLock<Arc<LabelIndex>>,
     config: ServiceConfig,
     cache_path: Option<PathBuf>,
+    warnings: RwLock<Vec<String>>,
 }
 
 impl AppService {
     pub fn new(config: ServiceConfig) -> Result<Self> {
         let live = ct_providers::default_bitcoin_provider()?;
+        let mut warnings = Vec::new();
         let (provider, cache_path): (Box<dyn BitcoinProvider>, _) = if config.no_cache {
             (Box::new(live), None)
         } else {
@@ -51,12 +53,25 @@ impl AppService {
                     ServiceError::internal("no user data folder found; choose a cache file")
                 })?,
             };
-            let store = ct_store::Store::open(&path)?;
-            let cached =
-                ct_store::CachedBitcoin::new(live, store, ct_store::CachePolicy::default());
-            (Box::new(cached), Some(path))
+            match open_cache(&path, &mut warnings) {
+                Some(store) => (
+                    Box::new(ct_store::CachedBitcoin::new(
+                        live,
+                        store,
+                        ct_store::CachePolicy::default(),
+                    )),
+                    Some(path),
+                ),
+                None => (Box::new(live), None),
+            }
         };
-        Self::with_provider(provider, config, cache_path)
+        let service = Self::with_provider(provider, config, cache_path)?;
+        service
+            .warnings
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .extend(warnings);
+        Ok(service)
     }
 
     /// Use a specific provider (tests, replay).
@@ -65,12 +80,13 @@ impl AppService {
         config: ServiceConfig,
         cache_path: Option<PathBuf>,
     ) -> Result<Self> {
-        let index = labels::load_index(config.extra_labels.as_deref())?;
+        let (index, problems) = labels::load_index(config.extra_labels.as_deref())?;
         Ok(AppService {
             provider,
             labels: RwLock::new(Arc::new(index)),
             config,
             cache_path,
+            warnings: RwLock::new(problems),
         })
     }
 
@@ -82,8 +98,11 @@ impl AppService {
     }
 
     fn reload_labels(&self) -> Result<()> {
-        let index = labels::load_index(self.config.extra_labels.as_deref())?;
+        let (index, problems) = labels::load_index(self.config.extra_labels.as_deref())?;
         *self.labels.write().unwrap_or_else(|e| e.into_inner()) = Arc::new(index);
+        let mut w = self.warnings.write().unwrap_or_else(|e| e.into_inner());
+        w.retain(|x| !x.starts_with("label pack "));
+        w.extend(problems);
         Ok(())
     }
 
@@ -96,6 +115,11 @@ impl AppService {
             labelled_addresses: labels.len(),
             packs: labels.packs().len(),
             user_labels_dir: labels::user_labels_dir().map(|p| p.display().to_string()),
+            warnings: self
+                .warnings
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone(),
         }
     }
 
@@ -233,6 +257,18 @@ impl AppService {
         req: TraceRequest,
         progress: &mut (dyn FnMut(Progress) + Send),
     ) -> Result<TraceView> {
+        self.btc_trace_stoppable(req, progress, &std::sync::atomic::AtomicBool::new(false))
+            .await
+    }
+
+    /// As [`Self::btc_trace`]; setting `stop` ends the trace early: what was found so far is
+    /// reported and the branches still open are "not followed: trace stopped by you".
+    pub async fn btc_trace_stoppable(
+        &self,
+        req: TraceRequest,
+        progress: &mut (dyn FnMut(Progress) + Send),
+        stop: &std::sync::atomic::AtomicBool,
+    ) -> Result<TraceView> {
         let txid = normalize_txid(&req.txid)?;
         let seed = match (
             req.vout,
@@ -267,14 +303,9 @@ impl AppService {
             ..defaults
         };
         let labels = self.labels();
-        let report = ct_trace::trace_bitcoin(
-            self.provider.as_ref(),
-            labels.as_ref(),
-            seed,
-            config,
-            progress,
-        )
-        .await?;
+        let provider = ct_providers::bitcoin::Stoppable::new(self.provider.as_ref(), stop);
+        let report =
+            ct_trace::trace_bitcoin(&provider, labels.as_ref(), seed, config, progress).await?;
         let graph = ct_trace::graph::build(&report);
         let generated_at = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -431,6 +462,47 @@ fn shape_view(shape: &TxShape) -> ShapeView {
 }
 
 /// Human-readable date for messages.
+/// Open the cache. A damaged file is moved aside (`<name>.broken-<time>`) and a new one
+/// started; if the cache still cannot be used (in use by another program, disk full), the
+/// app runs without it. Either way the problem is reported, never a failure to start.
+fn open_cache(path: &std::path::Path, warnings: &mut Vec<String>) -> Option<ct_store::Store> {
+    let first = match ct_store::Store::open(path) {
+        Ok(s) => return Some(s),
+        Err(e) => e.to_string(),
+    };
+    let damaged = ["not a database", "malformed", "corrupt", "schema"]
+        .iter()
+        .any(|k| first.contains(k));
+    if damaged {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let aside = path.with_extension(format!("broken-{stamp}"));
+        if std::fs::rename(path, &aside).is_ok() {
+            match ct_store::Store::open(path) {
+                Ok(s) => {
+                    warnings.push(format!(
+                        "The cache was damaged ({first}); it was moved to {} and a new one started.",
+                        aside.display()
+                    ));
+                    return Some(s);
+                }
+                Err(e) => {
+                    warnings.push(format!(
+                        "The cache could not be recreated ({e}); running without it."
+                    ));
+                    return None;
+                }
+            }
+        }
+    }
+    warnings.push(format!(
+        "The cache could not be opened ({first}); running without it (slower, nothing is kept)."
+    ));
+    None
+}
+
 pub fn date(unix: u64) -> String {
     format_utc(unix)
 }

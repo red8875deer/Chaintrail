@@ -150,8 +150,9 @@ fn parse_retry_after(resp: &reqwest::Response) -> Option<Duration> {
         .trim()
         .parse()
         .ok()?;
-    // Cap so one bad header cannot stall a trace for hours.
-    Some(Duration::from_secs(secs.min(60)))
+    // Cap so one bad header cannot stall a trace: with a second source to fall back on,
+    // waiting minutes on this one helps no one.
+    Some(Duration::from_secs(secs.min(15)))
 }
 
 fn status_error(source_name: &str, url: &str, status: StatusCode, body: String) -> ProviderError {

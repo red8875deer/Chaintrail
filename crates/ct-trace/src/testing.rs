@@ -90,6 +90,8 @@ pub fn coinbase(id: &str, height: u64, to: &Address, value: u64) -> UtxoTx {
 pub struct MemoryBitcoin {
     txs: HashMap<String, UtxoTx>,
     summaries: HashMap<Address, AddressSummary>,
+    /// Addresses whose check fails (data source error).
+    failing: Vec<Address>,
     /// Calls per method, for budget assertions.
     pub calls: Mutex<HashMap<&'static str, u32>>,
 }
@@ -100,6 +102,12 @@ impl MemoryBitcoin {
             txs: txs.into_iter().map(|t| (t.txid.clone(), t)).collect(),
             ..Default::default()
         }
+    }
+
+    /// Checking this address fails, as when the data source is down.
+    pub fn with_failing_summary(mut self, address: &Address) -> Self {
+        self.failing.push(address.clone());
+        self
     }
 
     pub fn with_summary(mut self, address: &Address, tx_count: u64, spent_outputs: u64) -> Self {
@@ -145,6 +153,12 @@ impl BitcoinProvider for MemoryBitcoin {
 
     async fn address_summary(&self, address: &Address) -> Result<AddressSummary, ProviderError> {
         self.count("address_summary");
+        if self.failing.contains(address) {
+            return Err(ProviderError::Unavailable {
+                source_name: "memory".into(),
+                detail: "HTTP 503".into(),
+            });
+        }
         Ok(self
             .summaries
             .get(address)

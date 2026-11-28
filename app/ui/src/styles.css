@@ -1411,3 +1411,6 @@ h1.mono {
 .app:has(> .mock-banner) {
   grid-template-rows: auto auto 1fr;
 }
+.app:has(> .mock-banner + .mock-banner) {
+  grid-template-rows: auto auto auto 1fr;
+}

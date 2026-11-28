@@ -24,6 +24,9 @@ pub enum ProviderError {
     BadResponse { source_name: String, detail: String },
     #[error("feature not supported by {0}")]
     Unsupported(String),
+    /// The caller stopped the work (e.g. the user pressed Stop during a trace).
+    #[error("stopped by the user")]
+    Cancelled,
 }
 
 impl ProviderError {
@@ -35,6 +38,11 @@ impl ProviderError {
                 | ProviderError::Unavailable { .. }
                 | ProviderError::BadResponse { .. }
                 | ProviderError::Unsupported(_)
+                // Blocked (bot protection, region): another source may still answer.
+                | ProviderError::Rejected {
+                    status: 401 | 403 | 451,
+                    ..
+                }
         )
     }
 }

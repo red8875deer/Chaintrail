@@ -78,6 +78,15 @@ export function App() {
           Demo data: recorded traces, no network. Any transaction id shows a recorded trace.
         </p>
       )}
+      {(status?.warnings?.length ?? 0) > 0 && (
+        <div className="mock-banner" role="alert">
+          {status!.warnings!.map((w) => (
+            <p key={w} style={{ margin: 0 }}>
+              {w}
+            </p>
+          ))}
+        </div>
+      )}
       <header className="topbar">
         <a className="brand" href={href({ page: "home" })}>
           <Logo />

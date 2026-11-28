@@ -107,6 +107,35 @@ impl LabelIndex {
     }
 
     /// Load every `*.toml` pack in `dir` (sorted by file name). A missing folder is fine.
+    /// As [`Self::load_dir`], but a pack that cannot be read or parsed is skipped and
+    /// reported (one damaged file must not stop the app); returns labels added and problems.
+    pub fn load_dir_lenient(&mut self, dir: &Path) -> (usize, Vec<String>) {
+        let entries = match std::fs::read_dir(dir) {
+            Ok(e) => e,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return (0, Vec::new()),
+            Err(e) => return (0, vec![format!("{}: {e}", dir.display())]),
+        };
+        let mut paths: Vec<_> = entries
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .filter(|p| p.extension().is_some_and(|x| x == "toml"))
+            .collect();
+        paths.sort();
+        let mut total = 0;
+        let mut problems = Vec::new();
+        for p in paths {
+            let name = p.display().to_string();
+            let loaded = std::fs::read_to_string(&p)
+                .map_err(|e| e.to_string())
+                .and_then(|text| PackFile::parse(&text, &name).map_err(|e| e.to_string()))
+                .and_then(|pack| self.add_pack(pack, &name).map_err(|e| e.to_string()));
+            match loaded {
+                Ok(n) => total += n,
+                Err(e) => problems.push(format!("label pack {name} was skipped: {e}")),
+            }
+        }
+        (total, problems)
+    }
+
     pub fn load_dir(&mut self, dir: &Path) -> Result<usize, LabelError> {
         let io = |e| LabelError::Io {
             path: dir.display().to_string(),

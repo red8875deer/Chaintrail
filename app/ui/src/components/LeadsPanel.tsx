@@ -518,6 +518,10 @@ export function LeadsPanel({
       <p className="muted small">
         Examined {r.stats.txs_examined} transactions and checked {r.stats.addresses_checked} addresses.
         {r.stats.budget_exhausted && " The transaction budget ran out; raise it to go further."}
+        {(r.stats.address_checks_failed ?? 0) > 0 &&
+          ` ${r.stats.address_checks_failed} address check${r.stats.address_checks_failed === 1 ? "" : "s"} failed (data source error): those branches are listed as not followed; try again later.`}
+        {(r.stats.address_checks_skipped ?? 0) > 0 &&
+          ` ${r.stats.address_checks_skipped} address checks were skipped (their budget was used up): only labels were used there.`}
       </p>
     </>
   );

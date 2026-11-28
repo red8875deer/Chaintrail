@@ -143,6 +143,12 @@ enum BtcCommand {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Warnings (a data source falling back, a cache write failing) go to stderr.
+    tracing_subscriber::fmt()
+        .with_max_level(tracing_subscriber::filter::LevelFilter::WARN)
+        .with_writer(std::io::stderr)
+        .with_target(false)
+        .init();
     let cli = Cli::parse();
     let output = match cli.command {
         Command::Check { address } => lookup::check(&address, cli.json)?,

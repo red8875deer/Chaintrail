@@ -16,6 +16,8 @@ pub enum ErrorKind {
     NotFound,
     /// A data source is down or rate limiting; retrying later may help.
     Unavailable,
+    /// The user stopped the work.
+    Cancelled,
     Internal,
 }
 
@@ -46,6 +48,7 @@ impl From<ct_providers::ProviderError> for ServiceError {
                 ErrorKind::Unavailable
             }
             P::Rejected { .. } | P::Unsupported(_) => ErrorKind::Internal,
+            P::Cancelled => ErrorKind::Cancelled,
         };
         let message = match &e {
             P::NotFound(_) => "Not found on the blockchain (check for a typo).".to_string(),

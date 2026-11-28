@@ -2,7 +2,7 @@
 
 import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { TraceProgress, TraceRequest, TraceView as View } from "../api/types";
-import { call, isDesktop, onTraceProgress } from "../api/client";
+import { startTrace } from "../api/client";
 import { Btc, ErrorBox } from "../components/bits";
 import { DetailsPanel } from "../components/DetailsPanel";
 import { type GraphControls, GraphCanvas, type Selection } from "../components/GraphCanvas";
@@ -214,13 +214,23 @@ export function TraceView({ params }: { params: TraceParams | null }) {
     setSelectedLead(null);
     setSelection(null);
     setStarted(Date.now());
-    const stop = await onTraceProgress((p) => id === runId.current && setProgress(p));
+    // A trace still running from before is stopped: its result would be thrown away.
+    stopRef.current?.();
+    stopRef.current = null;
     try {
       const key = JSON.stringify(req);
-      const v = (!fresh && recent.get(key)) || (await call("btc_trace", req));
+      let v = !fresh ? recent.get(key) : undefined;
+      if (!v) {
+        const t = startTrace(req, (p) => id === runId.current && setProgress(p));
+        stopRef.current = t.stop;
+        v = await t.result;
+        if (stopRef.current === t.stop) stopRef.current = null;
+      }
       if (id !== runId.current) return;
+      const stopped = v.report.leads.some((l) => l.kind.kind === "unexplored" && l.kind.stop.reason === "stopped");
       recent.delete(key);
-      recent.set(key, v);
+      // A stopped trace is partial: shown, but not kept for reopening.
+      if (!stopped) recent.set(key, v);
       if (recent.size > RECENT_MAX) recent.delete(recent.keys().next().value!);
       setView(v);
       setNoteClosed(false);
@@ -229,7 +239,7 @@ export function TraceView({ params }: { params: TraceParams | null }) {
       setFindNote("");
       const ends = v.report.leads.filter((l) => l.kind.kind === "endpoint").length;
       setAnnounce(
-        `Trace finished: ${v.report.leads.length} leads, ${ends} endpoint${ends === 1 ? "" : "s"}. Results are in the panel after the graph.`,
+        `Trace ${stopped ? "stopped" : "finished"}: ${v.report.leads.length} leads, ${ends} endpoint${ends === 1 ? "" : "s"}. Results are in the panel after the graph.`,
       );
       if (restore) {
         setHideBp(restore.hideBp);
@@ -250,9 +260,19 @@ export function TraceView({ params }: { params: TraceParams | null }) {
         setAnnounce("The trace failed; the reason is shown under the form.");
       }
     } finally {
-      stop();
       if (id === runId.current) setRunning(false);
     }
+  }, []);
+  /** Stops the trace that is running, if any. */
+  const stopRef = useRef<(() => void) | null>(null);
+  // Leaving the page (or closing it) stops a running trace instead of leaving it to run on.
+  useEffect(() => {
+    const leave = () => stopRef.current?.();
+    window.addEventListener("pagehide", leave);
+    return () => {
+      window.removeEventListener("pagehide", leave);
+      leave();
+    };
   }, []);
 
   // Start immediately when opened from a "Trace…" link.
@@ -646,10 +666,11 @@ export function TraceView({ params }: { params: TraceParams | null }) {
                 <span className="muted small">
                   {progress
                     ? `${plural(progress.txs_examined, "transaction")} examined, ${plural(progress.pending, "branch", "branches")} queued, ${plural(progress.leads, "lead")} so far`
-                    : isDesktop
-                      ? "Starting…"
-                      : "The first trace of a transaction can take a minute; repeat traces are instant."}
+                    : "Starting… Transactions are kept on this computer once fetched, so repeat traces are much faster."}
                 </span>
+                <button type="button" className="btn" onClick={() => stopRef.current?.()} disabled={!stopRef.current}>
+                  Stop and show what was found
+                </button>
               </div>
             </div>
           )}

@@ -18,12 +18,17 @@ pub struct CachePolicy {
     /// address's history, and spend status that is not yet final. Default: 10 minutes.
     /// `Duration::ZERO` disables caching of volatile data (permanent data is still cached).
     pub volatile_ttl: Duration,
+    /// Lifetime of an address summary used only for its activity counts (the busy-wallet
+    /// check, [`BitcoinProvider::address_activity`]): counts only grow, so an older one is a
+    /// safe lower bound. Default: 7 days. Repeat traces then need no address lookups.
+    pub activity_ttl: Duration,
 }
 
 impl Default for CachePolicy {
     fn default() -> Self {
         CachePolicy {
             volatile_ttl: Duration::from_secs(10 * 60),
+            activity_ttl: Duration::from_secs(7 * 24 * 60 * 60),
         }
     }
 }
@@ -44,10 +49,13 @@ pub struct CacheStats {
 /// - **`tx`**: served from the cache if present. A fetched tx is cached (forever) only if it
 ///   is confirmed (`block.is_some()`); unconfirmed txs are never cached.
 /// - **`outspends`**: always cached, with its fetch time. The row is *final* (served forever)
-///   if every output is spent by a confirmed tx, or if every output that is not spent by a
-///   confirmed tx is unspent and unspendable (OP_RETURN) according to the cached tx with the
-///   same txid. If that tx is not cached, the row is not final. Rows that are not final
-///   expire after `volatile_ttl`.
+///   if it has one entry per output of the cached tx with the same txid and every output is
+///   spent by a confirmed tx or is unspent and unspendable (OP_RETURN). If that tx is not
+///   cached, the row is not final. Rows that are not final expire after `volatile_ttl`. A
+///   fetched list whose length does not match the cached tx is a bad response: an error,
+///   never cached.
+/// - **`address_activity`**: an address summary used only for its counts; cached for
+///   `activity_ttl` (counts only grow).
 /// - **`address_summary`**: cached for `volatile_ttl`.
 /// - **`address_txs`**: the newest page (`after_txid = None`) is cached for `volatile_ttl`;
 ///   older pages (`Some(after_txid)`) cover settled history and are cached forever. A page
@@ -125,11 +133,9 @@ fn spent_and_confirmed(s: &OutputSpend) -> bool {
     s.spent && s.block.is_some()
 }
 
-/// Whether an outspends list can never change (see [`CachedBitcoin`]).
+/// Whether an outspends list can never change (see [`CachedBitcoin`]). It must have one
+/// entry per output of the cached tx: a short or empty list (a bad response) is never final.
 fn outspends_final(spends: &[OutputSpend], tx: Option<&UtxoTx>) -> bool {
-    if spends.iter().all(spent_and_confirmed) {
-        return true;
-    }
     let Some(tx) = tx else {
         return false;
     };
@@ -171,6 +177,28 @@ impl<P: BitcoinProvider> BitcoinProvider for CachedBitcoin<P> {
             return Ok(summary);
         }
 
+        let summary = self.inner.address_summary(address).await?;
+        let s = summary.clone();
+        self.save("address_summary", move |store| {
+            store.put_address_summary(&key, &s)
+        })
+        .await;
+        Ok(summary)
+    }
+
+    async fn address_activity(&self, address: &Address) -> Result<AddressSummary> {
+        let key = address.as_str().to_owned();
+        let ttl = self.policy.activity_ttl;
+        let k = key.clone();
+        let cached = self
+            .lookup("address_summary", move |store| {
+                let row = store.get_address_summary(&k)?;
+                Ok(row.filter(|r| r.is_fresh(ttl)).map(|r| r.value))
+            })
+            .await;
+        if let Some(summary) = cached {
+            return Ok(summary);
+        }
         let summary = self.inner.address_summary(address).await?;
         let s = summary.clone();
         self.save("address_summary", move |store| {
@@ -253,7 +281,7 @@ impl<P: BitcoinProvider> BitcoinProvider for CachedBitcoin<P> {
                 let Some(row) = store.get_outspends(&k)? else {
                     return Ok(None);
                 };
-                if row.is_fresh(ttl) || row.value.iter().all(spent_and_confirmed) {
+                if row.is_fresh(ttl) {
                     return Ok(Some(row.value));
                 }
                 let tx = store.get_tx(&k)?;
@@ -265,6 +293,22 @@ impl<P: BitcoinProvider> BitcoinProvider for CachedBitcoin<P> {
         }
 
         let spends = self.inner.outspends(&txid).await?;
+        // A list that does not match the transaction's outputs is a bad response: report it
+        // and keep it out of the cache.
+        let k = txid.clone();
+        // A plain read: not a cache lookup of its own (it does not count as a hit or miss).
+        if let Ok(Some(tx)) = self.store.run(move |store| store.get_tx(&k)).await
+            && tx.outputs.len() != spends.len()
+        {
+            return Err(ct_providers::ProviderError::BadResponse {
+                source_name: self.inner.name().to_string(),
+                detail: format!(
+                    "{} spend records for {} outputs of {txid}",
+                    spends.len(),
+                    tx.outputs.len()
+                ),
+            });
+        }
         let s = spends.clone();
         self.save("outspends", move |store| store.put_outspends(&txid, &s))
             .await;

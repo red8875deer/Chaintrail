@@ -7,9 +7,11 @@
 //! API: `POST /api/<command>` with the command's request as JSON; the same commands and
 //! shapes as the desktop app (`ct_service::views`).
 
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
 use axum::Router;
@@ -24,10 +26,25 @@ use serde_json::Value;
 use tower_http::services::{ServeDir, ServeFile};
 
 pub const TOKEN_HEADER: &str = "x-chaintrail-token";
+/// Names a running trace so the page can ask for its progress or stop it.
+pub const TRACE_ID_HEADER: &str = "x-chaintrail-trace-id";
+
+/// A trace in progress: its latest progress, and the flag that stops it.
+#[derive(Default)]
+struct TraceRun {
+    stop: AtomicBool,
+    progress: Mutex<Option<ct_trace::Progress>>,
+}
 
 struct AppState {
     service: AppService,
     token: String,
+    traces: Mutex<HashMap<String, Arc<TraceRun>>>,
+}
+
+#[derive(serde::Deserialize)]
+struct TraceIdRequest {
+    id: String,
 }
 
 pub fn new_token() -> Result<String> {
@@ -37,17 +54,58 @@ pub fn new_token() -> Result<String> {
 }
 
 pub fn router(service: AppService, token: String, ui_dir: Option<PathBuf>) -> Router {
-    let state = Arc::new(AppState { service, token });
+    let state = Arc::new(AppState {
+        service,
+        token,
+        traces: Mutex::new(HashMap::new()),
+    });
     let api = Router::new()
         .route("/api/{command}", post(api))
         .with_state(state);
-    match ui_dir {
+    let app = match ui_dir {
         Some(dir) => {
             let index = dir.join("index.html");
             api.fallback_service(ServeDir::new(dir).fallback(ServeFile::new(index)))
         }
         None => api,
-    }
+    };
+    app.layer(axum::middleware::map_response(security_headers))
+}
+
+/// The page may load only its own files, never be framed by another site, and its files are
+/// never reinterpreted as another type.
+async fn security_headers(mut res: Response) -> Response {
+    let h = res.headers_mut();
+    h.insert(
+        "content-security-policy",
+        axum::http::HeaderValue::from_static(
+            "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; \
+             object-src 'none'; base-uri 'none'; frame-ancestors 'none'",
+        ),
+    );
+    h.insert(
+        "x-frame-options",
+        axum::http::HeaderValue::from_static("DENY"),
+    );
+    h.insert(
+        "x-content-type-options",
+        axum::http::HeaderValue::from_static("nosniff"),
+    );
+    h.insert(
+        "referrer-policy",
+        axum::http::HeaderValue::from_static("no-referrer"),
+    );
+    res
+}
+
+/// Only this computer's own names: a page on another site that rebinds its domain to
+/// 127.0.0.1 sends its own name as Host and is refused (the token is a second line).
+fn local_host(headers: &HeaderMap) -> bool {
+    headers
+        .get(axum::http::header::HOST)
+        .and_then(|v| v.to_str().ok())
+        .map(|h| h.rsplit_once(':').map_or(h, |(name, _)| name))
+        .is_some_and(|name| matches!(name, "127.0.0.1" | "localhost" | "[::1]"))
 }
 
 pub async fn run(
@@ -99,6 +157,13 @@ async fn api(
     if !authorised {
         return (StatusCode::UNAUTHORIZED, "missing or wrong token").into_response();
     }
+    if !local_host(&headers) {
+        return (
+            StatusCode::FORBIDDEN,
+            "only this computer may use ChainTrail",
+        )
+            .into_response();
+    }
     let s = &state.service;
     let result = match command.as_str() {
         "status" => json(s.status()),
@@ -115,7 +180,60 @@ async fn api(
             Err(e) => Err(e),
         },
         "btc_trace" => match parse(&body) {
-            Ok(r) => s.btc_trace(r, &mut |_| {}).await.and_then(json),
+            Ok(r) => {
+                // A short id from the page (letters, digits, dashes) to follow this trace.
+                let id = headers
+                    .get(TRACE_ID_HEADER)
+                    .and_then(|v| v.to_str().ok())
+                    .filter(|v| {
+                        !v.is_empty()
+                            && v.len() <= 64
+                            && v.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+                    })
+                    .map(str::to_owned);
+                let run = Arc::new(TraceRun::default());
+                if let Some(id) = &id {
+                    state.traces.lock().unwrap().insert(id.clone(), run.clone());
+                }
+                let progress_run = run.clone();
+                let result = s
+                    .btc_trace_stoppable(
+                        r,
+                        &mut move |p| *progress_run.progress.lock().unwrap() = Some(p),
+                        &run.stop,
+                    )
+                    .await
+                    .and_then(json);
+                if let Some(id) = &id {
+                    state.traces.lock().unwrap().remove(id);
+                }
+                result
+            }
+            Err(e) => Err(e),
+        },
+        // Progress of a running trace (null when it is not running).
+        "trace_progress" => match parse::<TraceIdRequest>(&body) {
+            Ok(r) => {
+                let run = state.traces.lock().unwrap().get(&r.id).cloned();
+                Ok(match run.and_then(|run| *run.progress.lock().unwrap()) {
+                    Some(p) => serde_json::json!({
+                        "txs_examined": p.txs_examined,
+                        "pending": p.pending,
+                        "leads": p.leads,
+                    }),
+                    None => Value::Null,
+                })
+            }
+            Err(e) => Err(e),
+        },
+        // Stop a running trace: it ends early with what it found.
+        "trace_stop" => match parse::<TraceIdRequest>(&body) {
+            Ok(r) => {
+                if let Some(run) = state.traces.lock().unwrap().get(&r.id) {
+                    run.stop.store(true, Ordering::Relaxed);
+                }
+                Ok(serde_json::json!({}))
+            }
             Err(e) => Err(e),
         },
         "label_lookup" => match parse(&body) {
@@ -140,6 +258,10 @@ async fn api(
                 ErrorKind::InvalidInput => StatusCode::BAD_REQUEST,
                 ErrorKind::NotFound => StatusCode::NOT_FOUND,
                 ErrorKind::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
+                // 499: the client stopped the request (nginx's convention).
+                ErrorKind::Cancelled => {
+                    StatusCode::from_u16(499).unwrap_or(StatusCode::BAD_REQUEST)
+                }
                 ErrorKind::Internal => StatusCode::INTERNAL_SERVER_ERROR,
             };
             (status, axum::Json(e)).into_response()

@@ -9,7 +9,11 @@ use ct_labels::LabelIndex;
 
 /// Built-in packs, then the user's folder, then any extra folder given on the command line.
 pub fn load_index(extra: Option<&Path>) -> Result<LabelIndex> {
-    ct_service::labels::load_index(extra).context("loading labels")
+    let (index, problems) = ct_service::labels::load_index(extra).context("loading labels")?;
+    for p in problems {
+        eprintln!("warning: {p}");
+    }
+    Ok(index)
 }
 
 pub fn lookup(index: &LabelIndex, input: &str, json: bool) -> Result<String> {
